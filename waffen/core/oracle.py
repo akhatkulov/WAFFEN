@@ -14,7 +14,9 @@ reaching deeper into the stack — a promising direction even while still BLOCKE
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import urllib.parse
 from dataclasses import dataclass
 
@@ -25,7 +27,7 @@ class Target:
     path: str = "/"
     param: str = "q"
     method: str = "GET"
-    inject: str = "query"  # query|path|rawpath|body|json|header|cookie
+    inject: str = "query"  # query|path|rawpath|body|json|header|cookie|upload
     block_signature: str = "Request blocked by RedEye"
     timeout: int = 15
     user_agent: str = "WAFFEN/0.1 (+authorized-waf-testing)"
@@ -70,7 +72,8 @@ class Oracle:
     """
 
     def __init__(self, target: Target, sender=None, request_transform=None, calibration=None,
-                 delay: float = 0.0, backoff: bool = True):
+                 delay: float = 0.0, backoff: bool = True,
+                 canary_payload: str | None = None, canary_every: int = 25):
         self.t = target
         self._sender = sender or self._curl_send
         self.request_transform = request_transform
@@ -81,6 +84,37 @@ class Oracle:
         self.backoff = backoff      # exponential backoff on consecutive DOWN (avoid hammering a struggling/ban-dropping WAF)
         self._down_streak = 0
         self.requests = 0
+        self._tmp_cleanup: list[str] = []  # upload-probe temp files pending deletion
+
+        # Ban-onset circuit breaker (canary probe). A rate-limit ban usually looks
+        # like a clean, fast 403 — NOT a transport DOWN — so the backoff-on-DOWN path
+        # above never caught it; this session got self-banned repeatedly for exactly
+        # that reason. If `canary_payload` (a string expected to always be BENIGN) is
+        # given, every `canary_every` sends we re-probe it; if it now classifies as
+        # BLOCKED, the test source is very likely banned, not the content being newly
+        # risky. `ban_suspected` reflects the *latest* canary read (not sticky), so a
+        # caller can warn/abort, and recovers on its own once the ban clears.
+        self.canary_payload = canary_payload
+        self.canary_every = max(canary_every, 1)
+        self.ban_suspected = False
+        self._since_canary = 0
+
+    def _make_probe_file(self, content: bytes = b"WAFFEN-upload-probe-marker\n") -> str:
+        """Write a small benign-content temp file for a multipart upload probe.
+        Tracked for cleanup right after the curl subprocess that references it runs."""
+        fd, path = tempfile.mkstemp(prefix="waffen_upload_")
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+        self._tmp_cleanup.append(path)
+        return path
+
+    def _cleanup_tmp_files(self) -> None:
+        while self._tmp_cleanup:
+            p = self._tmp_cleanup.pop()
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
     _CAL_MAP = {"block": BLOCKED, "pass": THROUGH, "unresolved": BLOCKED}
 
@@ -124,6 +158,17 @@ class Oracle:
             cmd += ["-X", t.method, url, "-H", f"{t.param}: {payload}"]
         elif t.inject == "cookie":
             cmd += ["-X", t.method, url, "-H", f"Cookie: {t.param}={payload}"]
+        elif t.inject == "upload":
+            # `payload` controls the UPLOADED FILENAME, not a param value — this is
+            # the real-world test for "Upload Insecure Files": does the WAF filter
+            # dangerous extensions on a genuine multipart upload? A bare extension
+            # (no '.') gets a benign-looking stem; a dotted payload is used verbatim
+            # so seeds can carry full bypass filenames (double-ext, case, etc.).
+            fname = payload if "." in payload else f"waffen_probe.{payload}"
+            tmp_path = self._make_probe_file()
+            # curl's -F mini-syntax splits on ';'; quoting the filename value lets it
+            # safely contain one (e.g. the classic "shell.php;.jpg" multiviews trick).
+            cmd += ["-X", t.method, url, "-F", f'{t.param}=@{tmp_path};filename="{fname}"']
         else:
             raise ValueError(f"unknown inject mode: {t.inject}")
         return cmd
@@ -135,6 +180,8 @@ class Oracle:
                                  timeout=self.t.timeout + 5).stdout
         except Exception:
             return Response(DOWN, "000", 0, 0.0, "")
+        finally:
+            self._cleanup_tmp_files()  # any upload-probe temp file `_build` created
         nl = out.rfind("\n")
         body, stat = (out[:nl], out[nl + 1:].strip()) if nl != -1 else ("", out.strip())
         parts = stat.split()
@@ -160,7 +207,24 @@ class Oracle:
             _time.sleep(self.delay)
         self.requests += 1
         resp = self._apply_calibration(self._sender(payload))
-        if self.backoff:
+
+        # Canary ban check (see __init__ docstring note): a clean fast 403 ban looks
+        # just like a normal BLOCKED verdict, so it must be checked against a payload
+        # we *know* is benign, not inferred from this response alone.
+        if self.canary_payload is not None:
+            self._since_canary += 1
+            if self._since_canary >= self.canary_every:
+                self._since_canary = 0
+                self.requests += 1
+                canary_resp = self._apply_calibration(self._sender(self.canary_payload))
+                self.ban_suspected = (canary_resp.verdict == BLOCKED)
+
+        if self.ban_suspected and self.backoff:
+            # much more aggressive than the plain-DOWN backoff below: we are very
+            # likely hammering a source the WAF has already shut out.
+            self._down_streak += 1
+            _time.sleep(min(1.0 * (2 ** min(self._down_streak, 5)), 30.0))
+        elif self.backoff:
             if resp.verdict == DOWN:
                 self._down_streak += 1
                 _time.sleep(min(0.2 * (2 ** self._down_streak), 5.0))
@@ -173,6 +237,9 @@ class Oracle:
 
         Lets a search strategy evaluate a whole frontier/generation in parallel.
         `delay` throttles per-request (applied inside each worker before sending).
+        Note: the canary ban-check in `send()` does NOT run here (no stable request
+        ordering under concurrency) — use `send()` for long sequential runs where
+        ban detection matters.
         """
         import concurrent.futures as _cf
         import time as _time

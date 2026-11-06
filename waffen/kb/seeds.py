@@ -44,6 +44,19 @@ SEEDS: dict[str, list[str]] = {
         "' || '1'=='1",
         "{\"$gt\": \"\"}",
     ],
+    # Use with Target(inject="upload", param=<multipart field name>) against a real
+    # upload endpoint — these are filenames/extensions, not injection strings. Confirmed
+    # live (2026-11) that an unfiltered endpoint accepts all of these identically to a
+    # benign .pdf; see docs/VALIDATION.md.
+    "Upload Insecure Files": [
+        "phtml", "phar", "php", "php3", "php4", "php5", "php7", "pht", "phtm",
+        "shtml", "asp", "aspx", "jsp", "jspx", "cgi", "exe", "svg", "html", "htaccess",
+        "shell.php.jpg",       # double extension
+        "shell.PhP",           # case variation
+        "shell.php;.jpg",      # Apache multiviews / semicolon trick
+        "shell.php%00.jpg",    # legacy null-byte trick
+        "shell.pHtMl",
+    ],
 }
 
 
