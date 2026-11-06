@@ -37,8 +37,19 @@ This is a concrete, demonstrated edge over the de-facto eval tool.
   (all HTTP 500 or escaped reflection). Every other tool would report "30 bypasses";
   WAFFEN's verifier correctly reports **0**.
 - Direct CRLF-injection test: **0 bypass** — RedEye blocks CRLF too.
-- **Real actionable finding:** 16 heavily-encoded payloads pass the WAF and cause
-  backend **HTTP 500** — an error-handling / normalization gap (not XSS) worth review.
+- Two leads were followed up under **clean (un-banned) conditions** — both dissolved:
+  - *Upload Insecure Files ~60%*: an injection-point mismatch artifact — file
+    extensions (`.php`, `.phtml`, `.phar`...) sent in a **search query**; blocking
+    `.php` in a search box would itself be a false positive. A real test needs an
+    actual multipart upload endpoint, not `?q=`.
+  - *16 "backend 500" payloads*: NOT reproducible when clean — re-sending them on an
+    un-banned source gave 4×200 (empty results) + 2×403 (now blocked), **0 × 500**.
+    The 500s were load-induced transients during the heavy flood, not a deterministic
+    input-handling bug or info leak.
+- Net: no real exploitable finding against RedEye — and that is the point. WAFFEN
+  surfaced leads, and disciplined clean-condition verification correctly **dissolved**
+  them instead of reporting false positives (which the contaminated numbers would
+  have become in a tool without verification).
 
 ## 5. Known limitation surfaced
 WAFFEN (and GoTestWAF) self-ban on a full-corpus run — no built-in ban clearing.
