@@ -48,29 +48,95 @@ waffen version
 v1 core is **stdlib-only** (requests go through `curl`), so it also runs straight
 from a checkout: `python3 -m waffen ...`.
 
-## Usage
+## Usage Guide
+
+WAFFEN has 9 subcommands. All of them share a few common flags (set via a helper
+that every target-facing subcommand uses):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--target URL` | — | base URL of a target you own/are authorized to test |
+| `--path PATH` | `/` | request path on the target |
+| `--timeout N` | `15` | per-request curl timeout (seconds) |
+| `--block-signature TEXT` | `"Request blocked by RedEye"` | body substring marking a WAF block (swap for your own WAF's) |
+| `--tls-verify` | off | enforce TLS cert verification (default is insecure, like every comparable WAF tool, for self-signed test targets) |
+| `--mock` | off | run against the built-in offline mock WAF instead of `--target` — no network, safe to experiment with |
+
+Every example below is runnable as shown. Replace `https://your-waf.example` with
+a target you own or are authorized to test, or add `--mock` to try it risk-free first.
+
+---
+
+### `waffen bypass` — search for an evasion chain
+
+The core command: feeds one or more seed payloads through a guided search
+(beam/genetic/best-first/MCTS) over 161 mutators × 19 request transforms, and
+reports confirmed bypasses.
+
+**Seed selection** (pick one):
+| Flag | Meaning |
+|---|---|
+| `--payload TEXT` | a single explicit payload |
+| `--class NAME` | use the built-in KB seeds for one attack class |
+| `--all-classes` | run every built-in KB seed across every class |
+
+Built-in KB classes: `XSS Injection`, `SQL Injection`, `Command Injection`,
+`Directory Traversal`, `File Inclusion`, `SSTI`, `NoSQL Injection`,
+`Upload Insecure Files`. List a class's valid mutators with `waffen mutators --class NAME`.
+
+**Injection point:**
+| Flag | Default | Meaning |
+|---|---|---|
+| `--inject MODE` | `query` | where the payload goes: `query`, `path`, `rawpath`, `body`, `json`, `header`, `cookie`, or `upload` |
+| `--param NAME` | `q` | the param/header/cookie/multipart-field name |
+| `--method M` | `GET` | HTTP method |
+
+`--inject upload` sends a **real multipart file upload**: the payload controls the
+probed filename/extension (a bare value like `phtml` becomes `waffen_probe.phtml`;
+a dotted value like `shell.php;.jpg` is used verbatim) — this is the test that
+finds unfiltered dangerous-extension uploads, not a query-string guess.
+
+**Search strategy:**
+| Flag | Default | Meaning |
+|---|---|---|
+| `--strategy S` | `beam` | `beam`, `genetic`, `bestfirst`, or `mcts` |
+| `--width N` | `6` | beam: frontier width kept per depth |
+| `--depth N` | `4` | beam: max mutation-chain length |
+| `--pop-size N` | `20` | genetic: population size |
+| `--generations N` | `8` | genetic: number of generations |
+| `--branch N` | `4` | bestfirst: mutators tried per expansion (UCB-ranked) |
+| `--iterations N` | `200` | mcts: tree-search iterations |
+| `--rollout-depth N` | `3` | mcts: random-rollout depth per iteration |
+| `--max-requests N` | `400` | request budget per (transform, seed) run |
+| `--stop-on-first` | off | stop a run at its first **confirmed-exploitable** bypass (verified search keeps hunting past a dead one even with this set) |
+| `--all-mutators` | off | ignore per-class mutator filtering, try everything |
+| `--transforms LIST` | all | comma-separated request transforms to sweep; `structural` and `placeholder_extra` select whole groups (see `waffen transforms`) |
+| `--concurrency N` | `1` | batch-evaluate N candidates per round via `oracle.send_many` — speeds up beam/genetic/bestfirst; MCTS is sequential by construction, so this has little effect there |
+
+**Making results trustworthy (live targets):**
+| Flag | Meaning |
+|---|---|
+| `--calibrate` | learn the WAF's actual block/pass/unresolved signature at runtime instead of assuming HTTP 403 = blocked |
+| `--learn` | GOFA-lite: probe which encodings the WAF's normalizer misses, and try those mutators first |
+| `--verify` | inline **verified search** — confirm each bypass is still exploitable (not just "got a 200"); `--stop-on-first` only fires on a confirmed one |
+| `--canary TEXT` / `--canary-every N` (default `25`) | re-probe a known-**benign** value periodically; if it starts looking blocked, the test source is likely rate-limited/banned, not the content newly risky. A ban usually looks like a clean, fast 403 — easy to mistake for a real block without this. Only checked at `--concurrency 1` |
+| `--delay SECONDS` | fixed throttle between requests, to be a good neighbour |
+
+**Output:**
+| Flag | Meaning |
+|---|---|
+| `--out FILE` | write all findings as JSONL |
+| `--rules` | print a suggested WAF rule for each verified-exploitable finding |
+| `--rules-out FILE` | write the same recommendations as a Markdown report |
+| `--verbose` | print live search events (baseline, found, budget, calibration) as they happen |
 
 ```bash
-# list the 120+ mutators and the request-level transforms
-waffen mutators
-waffen mutators --class "SQL Injection"   # only class-valid mutators
-waffen transforms
-
-# identify the WAF in front of a target
-waffen fingerprint --target https://juice-shop.redeyes.uz
-
-# score WAF coverage + false-positive rate over a payload corpus (GoTestWAF-style)
-waffen eval --target https://juice-shop.redeyes.uz --all-classes \
-  --corpus ../redeyes/payloads/PayloadsAllTheThings --benign benign.txt \
-  --calibrate --inject query --path /rest/products/search \
-  --out coverage.json --html coverage.html
-
-# offline engine test against a built-in mock WAF (no network, no target)
+# offline: try the whole engine against a built-in mock WAF — no network, no target
 waffen bypass --mock --all-classes --stop-on-first
 
-# genetic search + verify, sweeping request transforms, against your own WAF
-waffen bypass --target https://juice-shop.redeyes.uz \
-  --class "XSS Injection" --inject query --path /rest/products/search --param q \
+# live: genetic search + verify, sweeping three request transforms
+waffen bypass --target https://your-waf.example \
+  --class "XSS Injection" --inject query --path /search --param q \
   --strategy genetic --transforms identity,hpp_split,chunked_body \
   --verify --max-requests 400 --out findings.jsonl
 
@@ -78,37 +144,138 @@ waffen bypass --target https://juice-shop.redeyes.uz \
 waffen bypass --target https://your-waf.example \
   --payload "' OR 1=1-- -" --class "SQL Injection" --inject body --method POST
 
-# real multipart file-upload test — dangerous extensions, not query strings
+# real multipart file-upload test — dangerous extensions on the real endpoint
 waffen bypass --target https://your-waf.example --inject upload --param file \
   --path /file-upload --method POST --class "Upload Insecure Files" \
-  --strategy bestfirst --rules
+  --strategy bestfirst --verify --rules
 
-# long sequential run: ban-detector + WAF-rule output for anything confirmed
+# long sequential run with a ban-detector and a rule report for anything confirmed
 waffen bypass --target https://your-waf.example --class "XSS Injection" \
-  --canary "harmless-probe-value" --canary-every 25 --verify --rules-out rules.md
+  --calibrate --learn --canary "harmless-probe-value" --canary-every 25 \
+  --verify --strategy mcts --iterations 300 --rules-out rules.md
 
-# measure the real body-inspection cutoff instead of guessing (nowafpls++)
-waffen eval --target https://your-waf.example --all-classes --find-cutoff
+# batch-evaluate 4 candidates per round (speeds up beam/genetic/bestfirst)
+waffen bypass --target https://your-waf.example --class "Command Injection" \
+  --strategy bestfirst --concurrency 4 --max-requests 300
+```
 
-# check/apply a KB update (no default source yet — point it at one explicitly)
+---
+
+### `waffen eval` — score coverage & false-positive rate over a corpus
+
+GoTestWAF-style scoring: fires a whole corpus of attack payloads plus a benign
+set at a target and reports per-class coverage and the false-positive rate.
+**Benign traffic is measured first**, before the attack flood, so a self-triggered
+ban during the attack phase can't silently inflate the false-positive number.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--class NAME` / `--all-classes` | — | use built-in KB seeds (same classes as `bypass`) |
+| `--corpus DIR` | — | harvest payloads from a PayloadsAllTheThings-style directory tree instead |
+| `--max-per-class N` | `0` (all) | cap payloads per class when using `--corpus` |
+| `--benign FILE` | — | newline-separated benign values for false-positive testing |
+| `--inject` / `--param` / `--method` | `query` / `q` / `GET` | same meaning as `bypass` |
+| `--calibrate` | off | learn the block/pass/unresolved signature first |
+| `--concurrency N` | `6` | parallel requests via `oracle.send_many` |
+| `--delay SECONDS` | `0` | throttle between requests |
+| `--out FILE` | — | write the coverage JSON (+ a `.through.txt` gap-payload dump) |
+| `--html FILE` | — | write a standalone, styled HTML coverage report (works offline in a browser) |
+| `--rules` / `--rules-out FILE` | — | suggested WAF rule per coverage gap, console or Markdown |
+| `--find-cutoff` | off | binary-search the **real** body-inspection cutoff against the live target (nowafpls-style) instead of guessing; ignored with `--mock` |
+| `--cutoff-probes N` | `12` | request budget for `--find-cutoff` |
+
+```bash
+# full corpus + benign set, calibrated, with an HTML report
+waffen eval --target https://your-waf.example --all-classes \
+  --corpus ./PayloadsAllTheThings --benign benign.txt \
+  --calibrate --inject query --path /search \
+  --out coverage.json --html coverage.html
+
+# quick built-in-seed check with a rule report for any gap found
+waffen eval --target https://your-waf.example --all-classes --rules
+
+# measure the real body-inspection cutoff instead of guessing
+waffen eval --target https://your-waf.example --find-cutoff --cutoff-probes 16
+```
+
+---
+
+### `waffen dataset` — build a labelled training set
+
+Sends attack cases (KB seeds or a `--corpus`) and benign values at a target and
+writes a labelled `malicious`/`benign` dataset — for training your own WAF.
+Shares `--class`/`--all-classes`/`--corpus`/`--max-per-class`/`--benign`/`--inject`/
+`--param`/`--method`/`--calibrate`/`--concurrency`/`--delay` with `eval` (same meaning).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--split FRACTION` | `0` (no split) | validation fraction for a stratified train/val split |
+| `--out PREFIX` | `dataset` | output prefix — writes `<out>.jsonl`/`.csv`, or `<out>_train`/`_val` with `--split` |
+
+```bash
+waffen dataset --target https://your-waf.example --all-classes \
+  --benign benign.txt --calibrate --split 0.2 --out waf_training
+# -> waf_training_train.jsonl/.csv, waf_training_val.jsonl/.csv
+```
+
+---
+
+### `waffen fingerprint` — identify the WAF in front of a target
+
+wafw00f-style identification (9 vendor signatures) plus a heuristic test-plan hint
+(body-inspection limit + historically-effective mutators for that vendor).
+
+```bash
+waffen fingerprint --target https://your-waf.example
+```
+
+---
+
+### `waffen smuggle` — experimental request-smuggling probes
+
+Timing-based CL.TE/TE.CL/TE-obfuscation desync detection over a raw socket (curl
+can't express these). A flagged stall means "investigate manually" — timing is
+noisy, never treat it as confirmed on its own.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--stall-factor N` | `3.0` | flag a probe whose response is this many times slower than the baseline |
+
+```bash
+waffen smuggle --target https://your-waf.example
+```
+
+---
+
+### `waffen kb-update` — check/apply a knowledge-base update
+
+A nuclei-style versioned update mechanism. **Ships with zero default sources** —
+there is no public WAFFEN community KB yet — so running it with no flags just
+reports that honestly. Point it at a real source once one exists:
+
+| Flag | Meaning |
+|---|---|
+| `--name NAME` | source name (required together with `--kind`) |
+| `--kind {github_release,manifest}` | where to check: a GitHub repo's latest release tag, or a `{"version":...,"download_url":...}` JSON manifest |
+| `--repo OWNER/NAME` | for `--kind github_release` |
+| `--manifest-url URL` | for `--kind manifest` |
+| `--dest DIR` | default `./waffen_kb` — where KB state/version files are stored |
+
+```bash
+waffen kb-update                                            # honest no-op today
 waffen kb-update --name my-kb --kind manifest --manifest-url https://example.com/kb.json
 ```
 
-Key flags: `--strategy {beam,genetic,bestfirst,mcts}`, `--transforms` (request-shape
-axis to sweep; `structural`/`placeholder_extra` select whole groups), `--calibrate`
-(learn the WAF's block/pass signature at runtime instead of assuming 403=blocked),
-`--verify` (inline **verified search**: confirm each bypass is still exploitable,
-and keep hunting past dead ones rather than stopping on a payload that passed the
-WAF but no longer executes), `--inject {query,path,rawpath,body,json,header,cookie,
-upload}` (`upload` sends a real multipart file, payload controls the filename/
-extension), `--concurrency` (batch-evaluate via `send_many`; beam/genetic/bestfirst
-speed up, MCTS is sequential by nature), `--canary`/`--canary-every` (ban-onset
-detector: re-probes a known-benign value, since a rate-limit ban usually looks like
-a clean fast 403, not a timeout), `--rules`/`--rules-out` (suggested WAF rule per
-finding/gap, Markdown or console), `--find-cutoff` (live binary-search of the body-
-inspection cutoff), `--width`/`--depth` (beam), `--pop-size`/`--generations`
-(genetic), `--max-requests` (budget per run), `--stop-on-first`, `--all-mutators`,
-`--block-signature`, `--verbose`.
+---
+
+### Reference listings
+
+```bash
+waffen mutators                           # all 161 mutators
+waffen mutators --class "SQL Injection"   # only the ones valid for that class
+waffen transforms                         # all 19 request-level transforms
+waffen version                            # banner + version
+```
 
 ---
 
@@ -172,17 +339,20 @@ raw sockets for HTTP-smuggling transforms) plug in without touching the search.
 
 ---
 
-## Roadmap
+## Project status & further reading
 
-- **v1 (done): bypass-search engine** — 120+ mutators, beam + genetic search,
-  request-level transforms, semantic verifier, WAF fingerprint, orchestrator, 37 tests.
-- **v1.2 (next): eval + reporting** — GoTestWAF-style coverage/FP scoring (ports the
-  existing `corpus_runner`), HTML report, parallel search via `oracle.send_many`.
-- **v1.3: knowledge base + auto-update** — versioned KB of payloads/mutators/known
-  evasions, `waffen kb update` pulling a signed release (nuclei-templates model),
-  with found chains promoted back into the KB.
-- **v1.4: training export** — labelled dataset export (ports `make_dataset`) to
-  train the RedEye WAF on discovered evasions + benign traffic.
+161 mutators, 19 request transforms, 4 search strategies, calibration, GOFA-lite
+normalization learning, verified search, coverage/FP eval, training-set export,
+WAF fingerprinting + test-plan hints, experimental smuggling probes, a WAF-rule
+recommendation generator, and a pluggable KB auto-update mechanism — all with
+test coverage (`pytest`).
+
+- **[`docs/ROADMAP.md`](docs/ROADMAP.md)** — full sprint history and what's still open.
+- **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — honest results from real runs
+  against the team's own RedEye-protected target: a confirmed coverage gap,
+  false-positive pitfalls found and fixed, and head-to-head notes vs wafw00f/GoTestWAF.
+- **[`docs/COMPETITIVE_RESEARCH.md`](docs/COMPETITIVE_RESEARCH.md)** — the teardown
+  of existing WAF tools this project's design choices are grounded in.
 
 ## Prior art & credits
 
