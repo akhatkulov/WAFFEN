@@ -50,6 +50,12 @@ _BANNER = r"""
 
 _EYE = "( ◉ )"
 
+# "Waffen" = weapons (de). A rifle under the wordmark.
+_RIFLE = r"""
+.______________________________________________________|_._._._._._._._._._.
+ \_____________________________________________________|_#_#_#_#_#_#_#_#_#_|
+                                                       l"""
+
 
 def banner(version: str = "", *, force: bool = False) -> str:
     """The WAFFEN banner. Empty string when colour/TTY is off (keeps pipes clean),
@@ -57,11 +63,12 @@ def banner(version: str = "", *, force: bool = False) -> str:
     if not COLOR and not force:
         return ""
     art = style(_BANNER, "bred", "bold") if COLOR else _BANNER
+    rifle = style(_RIFLE, "gray") if COLOR else _RIFLE
     tag = "   WAF evasion-path finder " + _EYE + "  ·  authorized targets only"
     sub = f"   v{version}" if version else ""
     tagline = style(tag, "gray") if COLOR else tag
     subline = style(sub, "dim") if COLOR else sub
-    return f"{art}\n{tagline}{('   ' + subline) if sub else ''}\n"
+    return f"{art}\n{rifle}\n{tagline}{('   ' + subline) if sub else ''}\n"
 
 
 def rule(label: str = "", width: int = 60) -> str:
