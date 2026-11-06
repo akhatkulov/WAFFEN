@@ -1,4 +1,6 @@
-# WAFFEN
+<p align="center">
+  <img src="docs/assets/banner.png" alt="WAFFEN — WAF evasion-path finder, by Akhatkulov (Me262), Offensive Security Engineer" width="640">
+</p>
 
 **WAF evaluation & bypass-research toolkit — for targets you own or are explicitly authorized to test.**
 
