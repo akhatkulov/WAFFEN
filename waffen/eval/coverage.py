@@ -19,6 +19,19 @@ from dataclasses import dataclass, field
 from ..core.oracle import Oracle, Target
 
 
+# GoTestWAF-style split: API-security classes vs classic application-security classes.
+API_CLASSES = frozenset({
+    "NoSQL Injection", "LDAP Injection", "XXE Injection", "XXE", "Mass Assignment",
+    "GraphQL Injection", "GraphQL", "SSRF", "Server Side Request Forgery",
+    "gRPC Injection", "SOAP Injection", "XPath Injection", "REST Injection",
+})
+
+
+def class_group(attack_class: str) -> str:
+    """Return "api" or "app" for an attack class; unknown classes default to "app"."""
+    return "api" if attack_class in API_CLASSES else "app"
+
+
 @dataclass
 class ClassScore:
     blocked: int = 0
@@ -55,8 +68,28 @@ class EvalResult:
     def fp_rate(self) -> float:
         return (100.0 * self.benign_blocked / self.benign_total) if self.benign_total else 0.0
 
+    def _group(self, group: str) -> ClassScore:
+        o = ClassScore()
+        for name, c in self.per_class.items():
+            if class_group(name) == group:
+                o.blocked += c.blocked; o.through += c.through
+                o.unresolved += c.unresolved; o.down += c.down
+        return o
+
+    @property
+    def api_coverage(self) -> float:
+        return self._group("api").coverage
+
+    @property
+    def app_coverage(self) -> float:
+        return self._group("app").coverage
+
     def as_dict(self) -> dict:
+        def grp(g):
+            s = self._group(g)
+            return {"coverage_pct": round(s.coverage, 1), "blocked": s.blocked, "through": s.through}
         return {
+            "api_vs_app": {"api": grp("api"), "app": grp("app")},
             "target": self.target,
             "overall": {"coverage_pct": round(self.overall.coverage, 1),
                         "blocked": self.overall.blocked, "through": self.overall.through,

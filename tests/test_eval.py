@@ -46,3 +46,26 @@ def test_as_dict_shape():
     res = run_eval(_target(), cases, benign=["banana"], sender=make_mock_sender())
     d = res.as_dict()
     assert "overall" in d and "false_positive_pct" in d and "per_class" in d
+
+
+def test_api_vs_app_split():
+    from waffen.eval.coverage import EvalResult, class_group
+    res = EvalResult(per_class={
+        "NoSQL Injection": ClassScore(blocked=1, through=3),
+        "SSRF": ClassScore(blocked=3, through=1),
+        "SQL Injection": ClassScore(blocked=9, through=1),
+        "Mystery Class": ClassScore(blocked=1, through=0),
+    })
+    assert class_group("Mystery Class") == "app"
+    assert res.api_coverage == 50.0           # 4 blocked / 8 resolved
+    assert abs(res.app_coverage - 100.0 * 10 / 11) < 1e-9
+    d = res.as_dict()["api_vs_app"]
+    assert d["api"] == {"coverage_pct": 50.0, "blocked": 4, "through": 4}
+    assert d["app"] == {"coverage_pct": 90.9, "blocked": 10, "through": 1}
+
+
+def test_api_vs_app_empty_group_is_zero():
+    from waffen.eval.coverage import EvalResult
+    res = EvalResult(per_class={"SQL Injection": ClassScore(blocked=1, through=1)})
+    assert res.api_coverage == 0.0
+    assert res.as_dict()["api_vs_app"]["api"] == {"coverage_pct": 0.0, "blocked": 0, "through": 0}
