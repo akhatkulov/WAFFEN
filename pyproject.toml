@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "waffen"
+version = "0.1.0"
+description = "WAF evaluation / bypass-research toolkit for authorized targets"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []  # v1 core is stdlib-only (curl via subprocess)
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+waffen = "waffen.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["waffen*"]
