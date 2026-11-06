@@ -110,18 +110,65 @@ class _Memo:
         self._cache[payload] = resp
         return resp
 
+    def prefetch(self, payloads, max_requests: int, concurrency: int) -> bool:
+        """Batch-send any of `payloads` not already cached, in ONE
+        `oracle.send_many` call — deduped within the batch (a payload appearing
+        twice, even from two different genomes, is only ever sent once) and
+        truncated to the remaining budget so this never pushes requests past
+        `max_requests`. Fills the cache in place; callers still go through
+        `get()` afterward so the scoring/Finding/verify_fn logic in `evaluate()`
+        is completely untouched — this only warms the cache.
+
+        Returns True if the batch had to be truncated for budget.
+        """
+        pending: list[str] = []
+        seen: set[str] = set()
+        for p in payloads:
+            if p in self._cache or p in seen:
+                continue
+            seen.add(p)
+            pending.append(p)
+        if not pending:
+            return False
+        remaining = max_requests - self._oracle.requests
+        if remaining <= 0:
+            return True
+        truncated = len(pending) > remaining
+        if truncated:
+            pending = pending[:remaining]
+        responses = self._oracle.send_many(pending, concurrency=concurrency)
+        for p, r in zip(pending, responses):
+            self._cache[p] = r
+        return truncated
+
 
 def genetic_search(oracle: Oracle, seed: str, mutators, *,
                     pop_size: int = 20, generations: int = 8,
                     max_requests: int = 400, attack_class: str = "",
                     elitism: int = 4, mutation_rate: float = 0.6,
                     stop_on_first: bool = False, verify_fn=None, on_event=None,
-                    seed_rng: int = 1337) -> SearchResult:
+                    seed_rng: int = 1337, concurrency: int = 1) -> SearchResult:
     """Evolve mutator-name chains against `oracle` to find evasion chains.
 
     `mutators` is a list of Mutator objects (same contract as beam_search).
     Returns a SearchResult identical in shape to beam_search's, with
     `findings` sorted best-first (THROUGH first, shortest chain first).
+
+    `concurrency` (default 1, same contract as beam_search): with 1, every
+    genome in a generation is decoded and evaluated one at a time through the
+    `_Memo`/`evaluate()` path exactly as before — byte-identical behaviour and
+    request order. With `concurrency > 1`, a whole generation's (initial
+    population, or a later generation's children) decoded payloads are first
+    checked against the memo cache — a payload decoded identically from two
+    different genomes is still only ever sent once — and the NOT-yet-cached
+    ones are sent in ONE `oracle.send_many(..., concurrency=concurrency)`
+    batch, truncated to the remaining budget (never exceeding `max_requests`).
+    The results are then folded back genome-by-genome, in the same order the
+    sequential path would process them, through the exact same `evaluate()`
+    (scoring/Finding/verify_fn, stop_on_first-after-each-genome) logic — so
+    memoization, stop_on_first and the findings' sort order are unaffected;
+    only the request *order* becomes non-deterministic (threads reorder),
+    same as beam_search.
     """
     def emit(kind: str, **kw):
         if on_event:
@@ -174,10 +221,22 @@ def genetic_search(oracle: Oracle, seed: str, mutators, *,
     def budget_left() -> bool:
         return oracle.requests < max_requests
 
+    def prefetch(genomes: list[Genome]) -> None:
+        """concurrency>1 only: batch-send a generation's not-yet-cached decoded
+        payloads in one `oracle.send_many` call before the per-genome
+        `evaluate()` loop below runs, so that loop's `memo.get()` calls become
+        cache hits instead of individual sends. Never called when
+        concurrency<=1, so the sequential path is untouched."""
+        payloads = [_decode(g, seed, by_name) for g in genomes]
+        if memo.prefetch(payloads, max_requests, concurrency):
+            emit("budget_exhausted", requests=oracle.requests)
+
     # -- initial population --------------------------------------------------
     population: list[Genome] = [
         _random_genome(rng, names) for _ in range(max(pop_size, 1))
     ]
+    if concurrency > 1:
+        prefetch(population)
 
     scored: list[tuple[float, Genome]] = []
     for g in population:
@@ -187,7 +246,7 @@ def genetic_search(oracle: Oracle, seed: str, mutators, *,
             result.requests = oracle.requests
             result.findings.sort(key=_finding_sort_key)
             return result
-        if not budget_left():
+        if concurrency <= 1 and not budget_left():
             break
 
     for gen in range(1, generations + 1):
@@ -220,9 +279,12 @@ def genetic_search(oracle: Oracle, seed: str, mutators, *,
                 continue
             children.append(child)
 
+        if concurrency > 1:
+            prefetch(children)
+
         new_scored: list[tuple[float, Genome]] = []
         for g in children:
-            if not budget_left():
+            if concurrency <= 1 and not budget_left():
                 break
             sc, _, _ = evaluate(g)
             new_scored.append((sc, g))

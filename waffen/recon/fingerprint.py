@@ -210,3 +210,138 @@ def fingerprint(target, sender=None) -> list["WafGuess"]:
 
     guesses.sort(key=lambda g: g.confidence, reverse=True)
     return guesses
+
+
+# ---------------------------------------------------------------------------
+# recommend_plan() support data — best-effort, PUBLIC/ballpark figures, NOT
+# measured against any live target. A starting point for a test plan, never
+# ground truth: every real deployment tunes these per-plan-tier/config.
+#
+# BODY_LIMITS: approximate request body/query inspection ceiling in bytes,
+# past which that vendor is documented (or reported) to reduce or stop
+# inspection in at least some deployments — the classic nowafpls padding
+# bypass surface. Primary source: the "Documented WAF Limitations" table in
+# assetnote/nowafpls (https://github.com/assetnote/nowafpls#documented-waf-limitations),
+# a Burp plugin built specifically around this bypass. That table only
+# covers Cloudflare / AWS WAF / Akamai / F5 BIG-IP(WAAP) / Sucuri (figures
+# below for those five are taken from it, picking the conservative/default
+# end of any documented range); ModSecurity, Wordfence, and
+# Imperva/Incapsula are NOT in that table — those three are this project's
+# own ballpark estimates (ModSecurity: round-number middle ground between
+# its own historically-varying SecRequestBodyNoFilesLimit/paranoia-level
+# defaults; Wordfence/Imperva: no official hard number is published at all)
+# and are labelled as such below. ALL figures are approximate and frequently
+# configurable (plan tier, paranoia level, custom rules) — use
+# `waffen.core.transforms.find_inspection_cutoff` to measure the REAL cutoff
+# for a specific live target instead of trusting this table.
+# ---------------------------------------------------------------------------
+BODY_LIMITS: dict[str, int] = {
+    "Cloudflare": 131072,         # 128 KB for the ruleset/WAF engine (nowafpls table; enterprise plans can be far higher)
+    "AWS WAF": 8192,              # 8 KB default; nowafpls table: configurable up to 65536 (64KB)
+    "Akamai": 8192,               # nowafpls table range is 8KB-128KB; picking the conservative default end
+    "F5 BIG-IP ASM": 20971520,    # 20 MB (nowafpls table, listed as "F5 BIG-IP WAAP" — same product family)
+    "ModSecurity": 1048576,       # 1 MB — NOT in nowafpls; our own ballpark (paranoia-level/SecRequestBodyLimit dependent)
+    "Sucuri": 10485760,           # 10 MB (nowafpls table, exact match)
+    "Wordfence": 8388608,         # 8 MB — NOT in nowafpls; our own ballpark (WP-plugin WAF, no official number published)
+    "Imperva/Incapsula": 131072,  # 128 KB — NOT in nowafpls; our own ballpark (no official number published)
+    # "RedEye": this project's own stand-in target, not a real/documented
+    # vendor — no published body-inspection limit exists, so it's
+    # intentionally omitted (recommend_plan() falls back to
+    # DEFAULT_BODY_LIMIT for it, same as any other unrecognized name).
+}
+
+# generic fallback for an unrecognized or absent vendor guess (conservative:
+# matches the smallest documented figure above, AWS WAF/Akamai-class).
+DEFAULT_BODY_LIMIT = 8192
+
+
+# ---------------------------------------------------------------------------
+# WEAK_HINTS: vendor -> a short list of mutator/transform NAMES (each one a
+# real, registered name in `waffen.mutate.REGISTRY` or
+# `waffen.core.transforms.TRANSFORMS` — verified by reading those modules)
+# that public bypass write-ups and tool catalogs (GoTestWAF's encoder/evasion
+# set, sqlmap's tamper scripts, assorted vendor-specific blog bypasses) have
+# historically reported effective against that vendor class.
+#
+# This is BEST-EFFORT GUIDANCE ONLY, not a guarantee: WAF rule sets evolve
+# constantly, and a technique that worked once may already be patched for a
+# given deployment. Treat it as a prioritized starting point for a test plan;
+# always confirm against the live target (e.g. via the search engine, or
+# `waffen.recon.normalize.learn_normalization`).
+# ---------------------------------------------------------------------------
+WEAK_HINTS: dict[str, list[str]] = {
+    # transforms.TRANSFORMS: json_array_wrap, mp_boundary_whitespace
+    # mutate.REGISTRY (encoder): double_url
+    "Cloudflare": ["json_array_wrap", "double_url", "mp_boundary_whitespace"],
+    # transforms.TRANSFORMS: junk_prefix_param, chunked_body, json_unicode_key
+    "AWS WAF": ["junk_prefix_param", "chunked_body", "json_unicode_key"],
+    # transforms.TRANSFORMS: mp_filename_confusion; mutate.REGISTRY (obfuscator): null_byte, case_random
+    "Akamai": ["mp_filename_confusion", "null_byte", "case_random"],
+    # transforms.TRANSFORMS: hpp_split, hpp_duplicate, chunked_body (classic HPP/chunking targets)
+    "Imperva/Incapsula": ["hpp_split", "hpp_duplicate", "chunked_body"],
+    # transforms.TRANSFORMS: charset_header, content_type_confusion, verb_override
+    "F5 BIG-IP ASM": ["charset_header", "content_type_confusion", "verb_override"],
+    # transforms.TRANSFORMS: mp_dup_disposition; mutate.REGISTRY (obfuscator): sql_inline_comment, case_toggle
+    "ModSecurity": ["mp_dup_disposition", "sql_inline_comment", "case_toggle"],
+    # mutate.REGISTRY (encoder): base64, double_url, html_entity_dec
+    "Sucuri": ["base64", "double_url", "html_entity_dec"],
+    # mutate.REGISTRY: case_random (obfuscator), unicode_fullwidth / js_unicode (encoder)
+    "Wordfence": ["case_random", "unicode_fullwidth", "js_unicode"],
+    # "RedEye": no public bypass literature exists for this project's own
+    # stand-in target — intentionally omitted (recommend_plan() falls back
+    # to an empty list, same as any other unrecognized name).
+}
+
+
+def recommend_plan(guesses: list["WafGuess"]) -> dict:
+    """Turn `fingerprint()` output into a starting test-plan hint.
+
+    Picks the highest-confidence guess (if any), looks up its best-effort
+    body-inspection limit (BODY_LIMITS) and historically-effective
+    mutator/transform names (WEAK_HINTS) — falling back to
+    DEFAULT_BODY_LIMIT / an empty list for a vendor with no data on file —
+    and returns:
+
+        {"vendor": str | None, "confidence": float, "body_limit": int,
+         "suggested_mutators": list[str], "note": str}
+
+    This is a HEURISTIC HINT ONLY: it is not a guarantee of the real cutoff,
+    nor that the suggested mutators will actually work against this specific
+    deployment. `note` says so explicitly. For a real, measured cutoff
+    against a live target, use `waffen.core.transforms.find_inspection_cutoff`.
+    """
+    if not guesses:
+        return {
+            "vendor": None,
+            "confidence": 0.0,
+            "body_limit": DEFAULT_BODY_LIMIT,
+            "suggested_mutators": [],
+            "note": ("no WAF signature matched (fingerprint() returned no guesses) — "
+                     "using generic defaults. This is NOT evidence of 'no WAF', only "
+                     "'no known signature hit'; heuristic only, not a guarantee."),
+        }
+
+    top = max(guesses, key=lambda g: g.confidence)
+    vendor = top.name
+    body_limit = BODY_LIMITS.get(vendor)
+    suggested_mutators = list(WEAK_HINTS.get(vendor, []))
+
+    if body_limit is None:
+        body_limit = DEFAULT_BODY_LIMIT
+        note = (f"top guess '{vendor}' (confidence {top.confidence}) has no documented "
+                f"body-inspection limit on file — falling back to DEFAULT_BODY_LIMIT "
+                f"({DEFAULT_BODY_LIMIT}). Heuristic hint only, not a guarantee: verify "
+                f"with find_inspection_cutoff() against the live target before relying on it.")
+    else:
+        note = (f"top guess '{vendor}' (confidence {top.confidence}); body_limit and "
+                f"suggested_mutators are best-effort published/ballpark figures, NOT a "
+                f"guarantee for this specific deployment — verify with "
+                f"find_inspection_cutoff() against the live target before relying on them.")
+
+    return {
+        "vendor": vendor,
+        "confidence": top.confidence,
+        "body_limit": body_limit,
+        "suggested_mutators": suggested_mutators,
+        "note": note,
+    }

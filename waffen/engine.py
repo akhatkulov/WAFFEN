@@ -58,7 +58,8 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                iterations: int = 200, rollout_depth: int = 3, delay: float = 0.0,
                max_requests: int = 400, stop_on_first: bool = False,
                timing_threshold: float | None = None, do_calibrate: bool = False,
-               do_learn: bool = False,
+               do_learn: bool = False, concurrency: int = 1,
+               canary_payload: str | None = None, canary_every: int = 25,
                do_verify: bool = False, sender=None, on_event=None) -> list[BypassRun]:
     """Run the full sweep. `seeds` is an iterable of (attack_class, payload)."""
     runs: list[BypassRun] = []
@@ -86,7 +87,8 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                          n_recommended=len(getattr(norm_profile, "recommended_mutators", []) or []))
 
         for cls, payload in seeds:
-            oracle = Oracle(target, sender=sender, request_transform=rt, calibration=cal, delay=delay)
+            oracle = Oracle(target, sender=sender, request_transform=rt, calibration=cal, delay=delay,
+                            canary_payload=canary_payload, canary_every=canary_every)
             mutators = _mutators_for(cls, all_mutators)
             if norm_profile is not None and _reorder is not None:
                 mutators = _reorder(mutators, norm_profile)
@@ -104,6 +106,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                     pop_size=pop_size, generations=generations,
                     max_requests=max_requests, attack_class=cls,
                     stop_on_first=stop_on_first, verify_fn=verify_fn, on_event=on_event,
+                    concurrency=concurrency,
                 )
             elif strategy == "mcts":
                 res = mcts_search(
@@ -112,6 +115,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                     max_requests=max_requests, attack_class=cls,
                     stop_on_first=stop_on_first, timing_threshold=tt,
                     verify_fn=verify_fn, on_event=on_event,
+                    concurrency=concurrency,
                 )
             elif strategy == "bestfirst":
                 res = best_first_search(
@@ -119,6 +123,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                     branch=branch, max_requests=max_requests, attack_class=cls,
                     stop_on_first=stop_on_first, timing_threshold=tt,
                     verify_fn=verify_fn, on_event=on_event,
+                    concurrency=concurrency,
                 )
             else:
                 res = beam_search(
@@ -126,6 +131,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                     width=width, depth=depth, max_requests=max_requests,
                     attack_class=cls, stop_on_first=stop_on_first,
                     verify_fn=verify_fn, on_event=on_event,
+                    concurrency=concurrency,
                 )
 
             # verifications now live on the findings themselves (set inline); expose a

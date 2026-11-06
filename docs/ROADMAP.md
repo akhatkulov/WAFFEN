@@ -18,8 +18,35 @@ orchestrator, 37 tests — all validated against the mock WAF only.
 > smuggling** (`waffen smuggle`, experimental), **training export** (`waffen dataset`
 > — closes the original WAF-training goal), **eval HTML report**, oracle throttle+backoff,
 > LICENSE + pytest (138 tests). 8 subcommands. Committed on `feat/waffen-core`.
-> Still needs: a real **live validation** sweep vs juice-shop (requires clearing the
-> test-source ban), API-vs-App scoring, KB auto-update (E1), concurrency in search.
+>
+> **Live validation — DONE (2026-11):** real runs against juice-shop/RedEye.
+> Named the WAF where wafw00f couldn't; matched GoTestWAF's 100% coverage while
+> avoiding its self-ban false-positive artifact (fixed: eval now measures benign
+> *before* attacks); verified search correctly dissolved a 30-payload "bypass" set
+> as non-exploitable; found and confirmed one real gap — `POST /file-upload`
+> accepts dangerous extensions unfiltered (see `docs/VALIDATION.md`).
+>
+> **Sprint 4 — DONE (2026-11):** closes the gaps the live validation exposed.
+> **Real multipart-upload inject mode** (`--inject upload`) — the exact test that
+> found the live finding, now repeatable/automatable, with an "Upload Insecure
+> Files" seed list grounded in that finding. **Ban-onset canary detector** — a
+> rate-limit ban usually looks like a clean fast 403 (not a transport DOWN), which
+> the old backoff never caught (this session self-banned ~5 times); `--canary`
+> periodically re-probes a known-benign value and escalates backoff hard if it
+> starts looking blocked. **WAF-rule recommendation generator** (`--rules`/
+> `--rules-out`) — closes the loop from "found a gap" to "here's the rule to add",
+> with class-specific templates grounded in real evasion mechanics. **Search
+> concurrency** extended to genetic/best-first (real batching via `send_many`);
+> MCTS stays honestly sequential (documented why, not faked). **E2**: fingerprint
+> → test-plan hints (vendor body-limits + historically-effective mutators) and a
+> live binary-search for the *real* inspection cutoff (nowafpls++, `--find-cutoff`)
+> replace guesswork. **GraphQL placeholder** transform (GoTestWAF-parity gap closed).
+> **E1**: KB auto-update mechanism (`waffen kb-update`) — honestly ships with zero
+> default sources (no public WAFFEN KB exists yet), ready to point at one.
+> 231 tests, 9 subcommands, 46 modules, ~7,750 LOC.
+> Still open: deeper live re-validation with the new upload/canary/rules tooling,
+> D3 raw-socket smuggling validated on a real desync-vulnerable target, concurrency
+> for a true grammar-based (CFG) payload synthesizer (research-grade, deferred).
 >
 > **Sprint 2 — DONE (2026-11):** A4 **MCTS+CFG** strategy (binary feedback, UCB,
 > geometric decay). First **live run vs juice-shop** validated the pipeline AND

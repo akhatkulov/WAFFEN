@@ -107,13 +107,33 @@ def _charset_header(t: Target, payload: str):
                        "--data-binary", body]
 
 
-def _junk_prefix_param(t: Target, payload: str):
+def _junk_prefix_param_build(t: Target, payload: str, size: int):
     # large benign parameter before the payload — some WAFs stop inspecting after N bytes
     url = _url(t)
     sep = "&" if "?" in url else "?"
-    pad = urllib.parse.urlencode({"padding": "A" * 8000})
+    pad = urllib.parse.urlencode({"padding": "A" * size})
     q = pad + "&" + urllib.parse.urlencode({t.param: payload})
     return _base(t) + ["-X", t.method, f"{url}{sep}{q}"]
+
+
+def _junk_prefix_param(t: Target, payload: str):
+    return _junk_prefix_param_build(t, payload, 8000)
+
+
+def junk_prefix_param_sized(size: int) -> RequestTransform:
+    """Factory: `junk_prefix_param` with a caller-chosen padding `size` (bytes)
+    instead of the hardcoded 8000 default.
+
+    Not auto-registered in TRANSFORMS — its size varies per call, so a caller
+    (e.g. `find_inspection_cutoff` below, or a CLI sweep across sizes) builds
+    one on demand: `junk_prefix_param_sized(20000).build(target, payload)`.
+    The plain `junk_prefix_param` entry in TRANSFORMS (8000 bytes) is kept
+    as-is for backward compatibility.
+    """
+    def _build(t: Target, payload: str):
+        return _junk_prefix_param_build(t, payload, size)
+    return RequestTransform(f"junk_prefix_param_{size}",
+                             f"huge benign param ({size}B) before payload", _build)
 
 
 # ---------------------------------------------------------------- D2 structural / parser-differential
@@ -186,6 +206,22 @@ def _xml_body(t: Target, payload: str):
                        "--data-binary", body]
 
 
+# ---------------------------------------------------------------- GoTestWAF-parity placeholder
+# A minimal, generic GraphQL envelope. Not a parser-differential trick like the
+# D2 structural set above — just a new wire FORMAT some WAF rule sets don't
+# inspect as deeply as plain JSON/form bodies (closes a GoTestWAF-parity gap).
+def _graphql_body(t: Target, payload: str):
+    # fixed minimal envelope: "q" here is the GraphQL variable name declared by
+    # the query string ($q), not t.param — a generic placeholder shape, not a
+    # per-target field-name mapping like the other transforms.
+    body = json.dumps({
+        "query": "query Probe($q: String) { search(q: $q) { id } }",
+        "variables": {"q": payload},
+    })
+    return _base(t) + ["-X", "POST", _url(t), "-H", "Content-Type: application/json",
+                       "-d", body]
+
+
 TRANSFORMS: list[RequestTransform] = [
     RequestTransform("identity", "default injection (no request reshaping)", _identity),
     RequestTransform("hpp_duplicate", "duplicate param: benign then payload", _hpp_duplicate),
@@ -206,10 +242,16 @@ TRANSFORMS: list[RequestTransform] = [
     RequestTransform("mp_filename_confusion", "multipart: name + filename on one part", _mp_filename_confusion),
     RequestTransform("mp_boundary_whitespace", "multipart: trailing space in boundary", _mp_boundary_whitespace),
     RequestTransform("xml_body", "payload inside an XML element", _xml_body),
+    RequestTransform("graphql_body", "minimal GraphQL query+variables envelope", _graphql_body),
 ]
 # transforms that reshape the request STRUCTURE (parser-differential), a distinct axis
 STRUCTURAL = {"json_dup_key", "json_unicode_key", "json_array_wrap", "json_nested_junk",
               "mp_dup_disposition", "mp_filename_confusion", "mp_boundary_whitespace", "xml_body"}
+
+# extra placeholder wire-formats that aren't parser-differential tricks (not
+# STRUCTURAL) — just new envelope shapes some WAF rule sets inspect less
+# thoroughly than classic form/JSON bodies.
+PLACEHOLDER_EXTRA = {"graphql_body"}
 
 BY_NAME = {t.name: t for t in TRANSFORMS}
 
@@ -227,6 +269,74 @@ def select(names: set[str] | None = None) -> list[RequestTransform]:
             return list(TRANSFORMS)
         if n == "structural":
             expanded |= STRUCTURAL
+        elif n == "placeholder_extra":
+            expanded |= PLACEHOLDER_EXTRA
         else:
             expanded.add(n)
     return [t for t in TRANSFORMS if t.name in expanded]
+
+
+# ---------------------------------------------------------------- nowafpls++ live cutoff probe
+# `junk_prefix_param`/`junk_prefix_param_sized` above *apply* the nowafpls
+# padding trick at a fixed, guessed size. This finds the REAL cutoff against a
+# live target by binary search, so a caller can pick a padding size that is
+# known to work instead of a guess from BODY_LIMITS (see recon/fingerprint.py).
+def find_inspection_cutoff(oracle, param: str = "padding", *, lo: int = 0, hi: int = 131072,
+                            probes: int = 12,
+                            signature_payload: str = "<script>alert(1)</script>") -> int | None:
+    """Binary-search a live target's real body/query-inspection cutoff.
+
+    nowafpls-style probe: for a given padding size, sends `lo`..`hi` bytes of
+    benign filler followed by a known-bad `signature_payload`, as ONE opaque
+    string — `("A" * pad_size) + "&" + urlencode({param: signature_payload})`
+    — passed to `oracle.send(...)` exactly like any other candidate payload
+    (whatever inject mode the oracle's Target is already configured with). If
+    the padding pushes the signature past the WAF's inspection window, the
+    verdict flips from BLOCKED to THROUGH even though the origin still sees
+    (and would act on) the full request.
+
+    `oracle` is duck-typed: anything with `.send(payload) -> obj-with-.verdict`
+    works — a real `waffen.core.oracle.Oracle`, or a lightweight test stub.
+    This function does not require Target/Oracle to support a dedicated
+    "padding size" inject mode; it only ever calls the single public
+    `oracle.send(payload)` entry point.
+
+    Runs a classic binary search for the smallest pad size whose verdict is
+    THROUGH, assuming the usual monotonic cutoff (BLOCKED below it, THROUGH
+    at/above it). Spends at most `probes` oracle.send() calls TOTAL, strictly
+    enforced via a counter local to this call (independent of
+    `oracle.requests` or any other traffic the oracle may already carry) —
+    if the budget is exhausted before the search fully converges, the best
+    (smallest confirmed-THROUGH) size found so far is returned.
+
+    Returns the smallest pad size (bytes) where the verdict flips to THROUGH,
+    or None if it never flips within `hi`, or no probe budget is available.
+    """
+    sent = 0
+
+    def probe(pad_size: int) -> bool:
+        nonlocal sent
+        sent += 1
+        payload = ("A" * pad_size) + "&" + urllib.parse.urlencode({param: signature_payload})
+        # compared against the literal string (not imported from .oracle) so this
+        # stays fully duck-typed: any oracle-like object with `.send(p).verdict`
+        # works, including a plain test stub that never touches oracle.py.
+        return oracle.send(payload).verdict == "THROUGH"
+
+    if probes <= 0 or hi < lo:
+        return None
+
+    if not probe(hi):
+        return None  # never flips within [lo, hi] (or no inspection cutoff at all)
+
+    best = hi
+    low, high = lo, hi
+    while sent < probes and low < high:
+        mid = low + (high - low) // 2
+        if probe(mid):
+            best = mid
+            high = mid
+        else:
+            low = mid + 1
+
+    return best

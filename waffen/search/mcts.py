@@ -82,7 +82,45 @@ def mcts_search(oracle: Oracle, seed: str, mutators, *,
                 decay: float = 0.5, max_requests: int = 400,
                 attack_class: str = "", stop_on_first: bool = False,
                 timing_threshold: float | None = None, seed_rng: int = 1337,
-                verify_fn=None, on_event=None) -> SearchResult:
+                verify_fn=None, on_event=None, concurrency: int = 1) -> SearchResult:
+    """MCTS evasion search — see the module docstring for the selection /
+    expansion / simulation / backprop loop. `mutators` is a list of Mutator
+    objects (same contract as beam_search).
+
+    `concurrency` (default 1) is accepted for API symmetry with beam_search /
+    genetic_search / best_first_search, and is validated the same trivial way
+    (any value is safe), but it has NO effect on behaviour, timing aside, here.
+    This is a deliberate, honest limitation, not an oversight: unlike those
+    other strategies, this loop never has more than one independent,
+    not-yet-sent payload available to batch into one `oracle.send_many` call.
+
+      - Selection descends using UCB1 stats accumulated from EVERY prior
+        iteration's backprop, so iterations are inherently sequential — the
+        very thing that makes it a *tree* search.
+      - Expansion tries untried mutators one at a time but stops (and sends)
+        after the FIRST one that yields a new payload — by design this MCTS
+        grows the tree one child per iteration, not a batch of children.
+      - The leaf re-evaluate performed right after expansion is always a
+        memo-cache hit: it is either the payload just evaluated during
+        expansion this same iteration, or an existing node whose payload was
+        already evaluated in a previous iteration. It never triggers a new
+        send, so there's nothing there to parallelize either.
+      - The rollout phase is a single evolving chain, not independent
+        candidates: each step mutates the *previous* step's resulting
+        payload, so the next payload to send is only known once the current
+        step's response is back. There is never a queue of >=2 not-yet-cached
+        payloads sitting around at once.
+
+    Making any of this concurrent for real would require changing what the
+    algorithm actually does — e.g. expanding several children per iteration,
+    or running several independent rollout chains per iteration (both are
+    real, named techniques: leaf/root parallelization), which changes
+    selection/backprop semantics and is out of scope here. We would rather
+    report an honest no-op than fake a speedup, so `concurrency` is a pure
+    pass-through: `concurrency=1` and `concurrency>1` run the exact same
+    sequence of oracle calls, in the exact same order, for the exact same
+    findings and request count.
+    """
     def emit(kind, **kw):
         if on_event:
             on_event(kind, **kw)

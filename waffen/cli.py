@@ -6,7 +6,11 @@ transforms) against a WAF so its coverage gaps can be found and fixed.
 
 Subcommands:
   bypass       search for evasion chains against a target (or a mock WAF)
+  eval         score WAF coverage + false-positive rate over a corpus
+  dataset      build a labelled attack+benign training set
+  smuggle      experimental timing-based HTTP request-smuggling probes
   fingerprint  identify the WAF in front of a target
+  kb-update    check/apply a KB update from a configured source
   mutators     list the built-in mutation library
   transforms   list the request-level transforms
   version      print version
@@ -27,6 +31,7 @@ from .report import results as report
 from .engine import run_bypass
 from .eval.coverage import run_eval
 from .eval import corpus as eval_corpus
+from .report import rules as rule_report
 
 
 def _gather_seeds(args):
@@ -81,6 +86,10 @@ def cmd_bypass(args) -> int:
         + (("  " + " ".join(flags)) if flags else ""))
     print(ui.rule())
 
+    if args.canary:
+        print(ui.gray(f"  (canary: re-probing a known-benign value every {args.canary_every} sends; "
+                      "only active at --concurrency 1 — see --help)"))
+
     runs = run_bypass(
         target, seeds,
         strategy=args.strategy, transform_names=transform_names, all_mutators=args.all_mutators,
@@ -88,13 +97,28 @@ def cmd_bypass(args) -> int:
         pop_size=args.pop_size, generations=args.generations, branch=args.branch,
         iterations=args.iterations, rollout_depth=args.rollout_depth, delay=args.delay,
         max_requests=args.max_requests, stop_on_first=args.stop_on_first,
-        do_calibrate=args.calibrate, do_learn=args.learn,
+        do_calibrate=args.calibrate, do_learn=args.learn, concurrency=args.concurrency,
+        canary_payload=args.canary or None, canary_every=args.canary_every,
         do_verify=args.verify and not args.mock, sender=sender, on_event=ev,
     )
     report.print_engine_summary(runs)
     if args.out:
         report.write_engine_jsonl(runs, args.out)
         print(f"\n[*] findings written to {args.out}")
+
+    if args.rules or args.rules_out:
+        suggestions = [rule_report.recommend_from_finding(f, endpoint=args.path)
+                      for run in runs for f in run.result.findings if f.verified]
+        if suggestions:
+            if args.rules:
+                print("\n" + ui.rule("SUGGESTED WAF RULES"))
+                print(rule_report.render_text(suggestions))
+            if args.rules_out:
+                from pathlib import Path as _P
+                _P(args.rules_out).write_text(rule_report.render_markdown(suggestions))
+                print(ui.ok(f"rule recommendations written to {args.rules_out}"))
+        else:
+            print("\n" + ui.gray("(no verified-exploitable findings — nothing to recommend a rule for)"))
     return 0
 
 
@@ -191,6 +215,32 @@ def cmd_eval(args) -> int:
             "cases": len(cases), "inject": target.inject,
             "calibrated": "yes" if calibration else "no"})
         print("\n" + ui.ok(f"HTML report: {args.html}"))
+
+    if args.rules or args.rules_out:
+        suggestions = rule_report.recommend_from_eval(res, endpoint=args.path)
+        if suggestions:
+            if args.rules:
+                print("\n" + ui.rule("SUGGESTED WAF RULES"))
+                print(rule_report.render_text(suggestions))
+            if args.rules_out:
+                from pathlib import Path as _P
+                _P(args.rules_out).write_text(rule_report.render_markdown(suggestions))
+                print(ui.ok(f"rule recommendations written to {args.rules_out}"))
+        else:
+            print("\n" + ui.gray("(no coverage gaps — nothing to recommend a rule for)"))
+
+    if args.find_cutoff and not args.mock:
+        from .core.oracle import Oracle as _O
+        from .core.transforms import find_inspection_cutoff
+        print("\n" + ui.rule("BODY-INSPECTION CUTOFF") +
+              ui.gray(f"  binary search, up to {args.cutoff_probes} probes"))
+        cutoff_oracle = _O(target, sender=sender, calibration=calibration)
+        cutoff = find_inspection_cutoff(cutoff_oracle, param="padding", probes=args.cutoff_probes)
+        if cutoff is None:
+            print(ui.gray("  no cutoff found within the probe budget (or the signature never got through)"))
+        else:
+            print(ui.ok(f"  measured cutoff: ~{cutoff} bytes") +
+                  ui.gray(f"  ({cutoff_oracle.requests} requests)"))
     return 0
 
 
@@ -291,6 +341,17 @@ def cmd_fingerprint(args) -> int:
         padded = f"{name:30}"
         label = ui.bold(ui.cyan(padded)) if i == 0 else padded
         print(f"  {ui.bar(conf*100, width=12)} {conf:.2f}  {label} " + ui.gray(getattr(g, "evidence", "")))
+
+    try:
+        from .recon.fingerprint import recommend_plan
+        plan = recommend_plan(guesses)
+        print("\n" + ui.rule("SUGGESTED TEST PLAN") + ui.gray("  heuristic — not a guarantee"))
+        print(ui.info("body limit      ") + ui.bold(f"~{plan['body_limit']} bytes"))
+        if plan["suggested_mutators"]:
+            print(ui.info("worth trying    ") + ui.gray(", ".join(plan["suggested_mutators"])))
+        print(ui.gray("  " + plan["note"]))
+    except Exception:
+        pass  # plan is a bonus; never let it break a plain fingerprint run
     return 0
 
 
@@ -317,6 +378,41 @@ def cmd_smuggle(args) -> int:
     else:
         print(ui.ok("no desync signal (no stall vs baseline)"))
     return 0
+
+
+def cmd_kb_update(args) -> int:
+    from .kb.update import KBSource, check_and_update_all, default_sources, load_local_version
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+
+    sources = default_sources()
+    if args.name and args.kind:
+        local_v = load_local_version(args.dest, args.name)
+        sources = [KBSource(name=args.name, kind=args.kind, repo=args.repo,
+                            manifest_url=args.manifest_url, local_version=local_v)]
+    elif sources:
+        pass  # (currently always empty — default_sources() ships with none configured yet)
+    else:
+        print(ui.warn("no KB source configured — there is no public WAFFEN community-KB yet."))
+        print(ui.gray("  pass --name NAME --kind github_release --repo owner/name"))
+        print(ui.gray("  or   --name NAME --kind manifest --manifest-url URL"))
+        print(ui.gray("  to check/apply one source now."))
+        return 0
+
+    print(ui.info("checking ") + ui.bold(f"{len(sources)} source(s)") + ui.gray(f"  dest={args.dest}"))
+    results = check_and_update_all(sources, args.dest)
+    any_err = False
+    for r in results:
+        if r.error:
+            any_err = True
+            print(ui.bad(f"{r.source_name}: {r.error}"))
+        elif r.applied:
+            print(ui.ok(f"{r.source_name}: updated to {r.new_version} -> {r.dest_path}"))
+        else:
+            print(ui.gray(f"  {r.source_name}: already up to date"))
+    return 1 if any_err else 0
 
 
 def cmd_mutators(args) -> int:
@@ -368,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--param", default="q", help="param/header/cookie name")
     b.add_argument("--method", default="GET")
     b.add_argument("--inject", default="query",
-                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie"])
+                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload"])
     b.add_argument("--strategy", default="beam", choices=["beam", "genetic", "bestfirst", "mcts"],
                    help="search strategy")
     b.add_argument("--branch", type=int, default=4, help="bestfirst: mutators tried per expansion")
@@ -388,8 +484,19 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--delay", type=float, default=0.0, help="seconds between requests (throttle; avoids self-ban)")
     b.add_argument("--stop-on-first", action="store_true", help="stop a run at its first bypass")
     b.add_argument("--all-mutators", action="store_true", help="ignore per-class mutator filtering")
+    b.add_argument("--concurrency", type=int, default=1,
+                   help="batch-evaluate this many candidates per round via oracle.send_many "
+                        "(beam/genetic/bestfirst speed up; mcts is sequential by nature, see docs)")
+    b.add_argument("--canary", default="",
+                   help="a known-BENIGN value to re-probe periodically; if it starts looking "
+                        "blocked, the test source is likely banned, not the content risky. "
+                        "Only checked at --concurrency 1 (sequential sends)")
+    b.add_argument("--canary-every", type=int, default=25, help="re-probe the canary every N sends")
     b.add_argument("--verbose", action="store_true", help="print search events")
     b.add_argument("--out", default="", help="write findings JSONL here")
+    b.add_argument("--rules", action="store_true",
+                   help="print suggested WAF rules for verified-exploitable findings")
+    b.add_argument("--rules-out", default="", help="write suggested WAF rules (Markdown) here")
     b.set_defaults(func=cmd_bypass)
 
     e = sub.add_parser("eval", help="score WAF coverage + false-positive rate over a corpus")
@@ -403,12 +510,18 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--param", default="q")
     e.add_argument("--method", default="GET")
     e.add_argument("--inject", default="query",
-                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie"])
+                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload"])
     e.add_argument("--calibrate", action="store_true", help="learn block/pass signature first")
     e.add_argument("--concurrency", type=int, default=6)
     e.add_argument("--delay", type=float, default=0.0)
     e.add_argument("--out", default="", help="write coverage JSON (+ .through.txt gaps) here")
     e.add_argument("--html", default="", help="write a styled standalone HTML coverage report here")
+    e.add_argument("--rules", action="store_true", help="print suggested WAF rules for coverage gaps")
+    e.add_argument("--rules-out", default="", help="write suggested WAF rules (Markdown) here")
+    e.add_argument("--find-cutoff", action="store_true",
+                   help="binary-search the real body-inspection cutoff against the live target "
+                        "(nowafpls-style; ignored with --mock)")
+    e.add_argument("--cutoff-probes", type=int, default=12, help="max requests for --find-cutoff")
     e.set_defaults(func=cmd_eval)
 
     d = sub.add_parser("dataset", help="build a labelled attack+benign training set (for WAF training)")
@@ -422,7 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--param", default="q")
     d.add_argument("--method", default="GET")
     d.add_argument("--inject", default="query",
-                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie"])
+                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload"])
     d.add_argument("--calibrate", action="store_true", help="learn block/pass signature first")
     d.add_argument("--concurrency", type=int, default=6)
     d.add_argument("--delay", type=float, default=0.0)
@@ -439,6 +552,15 @@ def build_parser() -> argparse.ArgumentParser:
     fp = sub.add_parser("fingerprint", help="identify the WAF in front of a target")
     _add_target_args(fp)
     fp.set_defaults(func=cmd_fingerprint)
+
+    kb = sub.add_parser("kb-update", help="check/apply a KB update from a configured source")
+    kb.add_argument("--name", default="", help="source name (required with --kind)")
+    kb.add_argument("--kind", default="", choices=["", "github_release", "manifest"],
+                    help="where to check for an update")
+    kb.add_argument("--repo", default="", help="owner/name, for --kind github_release")
+    kb.add_argument("--manifest-url", default="", help="manifest JSON URL, for --kind manifest")
+    kb.add_argument("--dest", default="./waffen_kb", help="local directory to store KB state in")
+    kb.set_defaults(func=cmd_kb_update)
 
     m = sub.add_parser("mutators", help="list the built-in mutation library")
     m.add_argument("--class", dest="attack_class", default="", help="only mutators valid for this class")

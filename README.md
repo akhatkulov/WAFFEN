@@ -75,16 +75,38 @@ waffen bypass --target https://juice-shop.redeyes.uz \
 # one explicit payload, body injection, beam search
 waffen bypass --target https://your-waf.example \
   --payload "' OR 1=1-- -" --class "SQL Injection" --inject body --method POST
+
+# real multipart file-upload test — dangerous extensions, not query strings
+waffen bypass --target https://your-waf.example --inject upload --param file \
+  --path /file-upload --method POST --class "Upload Insecure Files" \
+  --strategy bestfirst --rules
+
+# long sequential run: ban-detector + WAF-rule output for anything confirmed
+waffen bypass --target https://your-waf.example --class "XSS Injection" \
+  --canary "harmless-probe-value" --canary-every 25 --verify --rules-out rules.md
+
+# measure the real body-inspection cutoff instead of guessing (nowafpls++)
+waffen eval --target https://your-waf.example --all-classes --find-cutoff
+
+# check/apply a KB update (no default source yet — point it at one explicitly)
+waffen kb-update --name my-kb --kind manifest --manifest-url https://example.com/kb.json
 ```
 
 Key flags: `--strategy {beam,genetic,bestfirst,mcts}`, `--transforms` (request-shape
-axis to sweep), `--calibrate` (learn the WAF's block/pass signature at runtime
-instead of assuming 403=blocked), `--verify` (inline **verified search**: confirm
-each bypass is still exploitable, and keep hunting past dead ones rather than
-stopping on a payload that passed the WAF but no longer executes),
-`--inject {query,path,rawpath,body,json,header,cookie}`, `--width`/`--depth`
-(beam), `--pop-size`/`--generations` (genetic), `--max-requests` (budget per run),
-`--stop-on-first`, `--all-mutators`, `--block-signature`, `--verbose`.
+axis to sweep; `structural`/`placeholder_extra` select whole groups), `--calibrate`
+(learn the WAF's block/pass signature at runtime instead of assuming 403=blocked),
+`--verify` (inline **verified search**: confirm each bypass is still exploitable,
+and keep hunting past dead ones rather than stopping on a payload that passed the
+WAF but no longer executes), `--inject {query,path,rawpath,body,json,header,cookie,
+upload}` (`upload` sends a real multipart file, payload controls the filename/
+extension), `--concurrency` (batch-evaluate via `send_many`; beam/genetic/bestfirst
+speed up, MCTS is sequential by nature), `--canary`/`--canary-every` (ban-onset
+detector: re-probes a known-benign value, since a rate-limit ban usually looks like
+a clean fast 403, not a timeout), `--rules`/`--rules-out` (suggested WAF rule per
+finding/gap, Markdown or console), `--find-cutoff` (live binary-search of the body-
+inspection cutoff), `--width`/`--depth` (beam), `--pop-size`/`--generations`
+(genetic), `--max-requests` (budget per run), `--stop-on-first`, `--all-mutators`,
+`--block-signature`, `--verbose`.
 
 ---
 
@@ -93,23 +115,34 @@ stopping on a payload that passed the WAF but no longer executes),
 ```
 waffen/
   engine.py             — orchestrator: sweep request-transform × seed × strategy (+verify)
-  core/     oracle.py   — curl sender, BLOCKED/THROUGH/DOWN classifier, score(), send_many()
-            transforms.py — request-level transforms (HPP, chunked, multipart, verb, ...)
+  core/     oracle.py   — curl sender, BLOCKED/THROUGH/DOWN classifier, score(), send_many(),
+                          upload-filename inject mode, ban-onset canary detector
+            transforms.py — request-level transforms (HPP, chunked, multipart, verb, GraphQL,
+                          structural/parser-differential, nowafpls-style padding + live cutoff search)
             mock.py     — offline signature-WAF simulator for tests
+            rawhttp.py / smuggle.py — raw-socket transport + CL.TE/TE.CL desync probes
   mutate/   base.py     — Mutator + Registry (per-class operator selection)
             encoders.py / obfuscators.py / sql_tamper.py / xss_context.py /
-            path_cmd.py / generic_extra.py — 120+ class-aware mutators
-  search/   beam.py     — feedback-driven beam search over mutation chains
-            genetic.py  — evolutionary search with memoization (fewer requests)
+            path_cmd.py / generic_extra.py / quickwin.py / advanced.py — 160+ class-aware mutators
+  search/   beam.py / genetic.py / bestfirst.py / mcts.py — 4 guided search strategies, each
+                          with optional `concurrency` (batched via oracle.send_many)
+            bandit.py   — UCB1 operator-selection + blocked-pattern memory
             scoring.py  — composite fitness (chain-length penalty, 4xx→5xx bonus)
   verify/   verifier.py — per-class semantic check: is a THROUGH payload still exploitable?
             calibrate.py — learn the WAF's block/pass signature at runtime (ffuf -ac style)
-  recon/    fingerprint.py — wafw00f-style WAF identification (9 vendors)
+            structural.py — WAFFLED 3-part oracle for parser-differential bypasses
+  recon/    fingerprint.py — wafw00f-style WAF ID (9 vendors) + test-plan/body-limit hints
+            normalize.py — GOFA-lite: probe which encodings the WAF's normalizer misses
   eval/     coverage.py — GoTestWAF-style coverage + false-positive scoring over a corpus
             corpus.py   — harvest payloads from a PayloadsAllTheThings-style tree
+            dataset.py  — labelled attack+benign training-set export
   kb/       seeds.py    — built-in seed payloads per attack class (bootstrap)
-  report/   results.py  — JSONL findings + readable summary
-  cli.py                — `waffen bypass | eval | fingerprint | mutators | transforms | version`
+            update.py   — nuclei-style versioned KB auto-update (pluggable, no default source yet)
+  report/   results.py  — console/JSONL findings summary
+            html.py     — standalone styled HTML coverage report
+            rules.py    — WAF-rule recommendation generator (finding/gap → actionable rule text)
+  cli.py                — `waffen bypass | eval | dataset | smuggle | fingerprint | kb-update |
+                          mutators | transforms | version`
 ```
 
 ### Two orthogonal evasion axes
