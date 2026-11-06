@@ -26,19 +26,23 @@ def parse_target(base_url: str, path: str = "/"):
     return host, port, tls, p
 
 
-def send_raw(host: str, port: int, tls: bool, raw: bytes, timeout: float = 10.0) -> dict:
+def send_raw(host: str, port: int, tls: bool, raw: bytes, timeout: float = 10.0,
+             verify: bool = False) -> dict:
     """Send raw bytes; return {status, elapsed, body, error}. A stall returns
-    elapsed≈timeout with whatever arrived — that delay is the desync signal."""
+    elapsed≈timeout with whatever arrived — that delay is the desync signal.
+
+    `verify` controls TLS cert checking. Default is off (matching the toolchain's
+    `curl -sk`): a WAF tester must reach self-signed / demo endpoints. Pass
+    verify=True to enforce. Authorized targets only."""
     start = time.time()
     data = b""
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
         if tls:
-            # Deliberately insecure, matching the rest of the toolchain's `curl -sk`:
-            # a WAF tester must reach self-signed / demo endpoints. Authorized targets only.
             ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
+            if not verify:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
             sock = ctx.wrap_socket(sock, server_hostname=host)
         sock.sendall(raw)
         sock.settimeout(timeout)

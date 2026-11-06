@@ -20,7 +20,7 @@ def test_crlf_marker_in_headers_is_exploitable(monkeypatch):
     # the checker generated) -> strong, direct proof.
     def fake_fetch_headers(target, payload, timeout=None):
         import re
-        m = re.search(r"X-Waffen-CRLF: wfxcrlf\d+", payload)
+        m = re.search(r"X-Waffen-CRLF: wfxcrlf[0-9a-f]+", payload)
         marker = m.group(0) if m else "X-Waffen-CRLF: unknown"
         return f"HTTP/1.1 200 OK\r\n{marker}\r\nContent-Type: text/html"
 
@@ -48,7 +48,7 @@ def test_crlf_marker_only_in_body_is_lower_confidence(monkeypatch):
     def sender(p):
         # extract the token waffen generated so the body "reflects" it
         import re
-        m = re.search(r"wfxcrlf\d+", p)
+        m = re.search(r"wfxcrlf[0-9a-f]+", p)
         if m:
             captured_token["tok"] = m.group(0)
             return Response("THROUGH", "200", 50, 0.01, f"<html>echo: {m.group(0)}</html>")
@@ -85,7 +85,7 @@ def test_crlf_header_fetch_unavailable_falls_back_to_body(monkeypatch):
 
     def sender(p):
         import re
-        m = re.search(r"wfxcrlf\d+", p)
+        m = re.search(r"wfxcrlf[0-9a-f]+", p)
         if m:
             return Response("THROUGH", "200", 50, 0.01, f"<html>echo: {m.group(0)}</html>")
         return Response("THROUGH", "200", 10, 0.01, "<html>ok</html>")
@@ -98,7 +98,7 @@ def test_crlf_header_fetch_unavailable_falls_back_to_body(monkeypatch):
 def test_verify_dispatches_crlf_injection_class(monkeypatch):
     def fake_fetch_headers(target, payload, timeout=None):
         import re
-        m = re.search(r"X-Waffen-CRLF: wfxcrlf\d+", payload)
+        m = re.search(r"X-Waffen-CRLF: wfxcrlf[0-9a-f]+", payload)
         marker = m.group(0) if m else "X-Waffen-CRLF: unknown"
         return f"HTTP/1.1 200 OK\r\n{marker}\r\nContent-Type: text/html"
 

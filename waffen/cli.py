@@ -55,7 +55,7 @@ def cmd_bypass(args) -> int:
     target = Target(
         base_url=args.target or "mock://local",
         path=args.path, param=args.param, method=args.method,
-        inject=args.inject, block_signature=args.block_signature, timeout=args.timeout,
+        inject=args.inject, block_signature=args.block_signature, timeout=args.timeout, tls_verify=args.tls_verify,
     )
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
     transform_names = set(args.transforms.split(",")) if args.transforms else None
@@ -135,7 +135,7 @@ def cmd_eval(args) -> int:
 
     target = Target(base_url=args.target or "mock://local", path=args.path, param=args.param,
                     method=args.method, inject=args.inject, block_signature=args.block_signature,
-                    timeout=args.timeout)
+                    timeout=args.timeout, tls_verify=args.tls_verify)
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
 
     calibration = None
@@ -223,7 +223,7 @@ def cmd_dataset(args) -> int:
 
     target = Target(base_url=args.target or "mock://local", path=args.path, param=args.param,
                     method=args.method, inject=args.inject, block_signature=args.block_signature,
-                    timeout=args.timeout)
+                    timeout=args.timeout, tls_verify=args.tls_verify)
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
     calibration = None
     if args.calibrate:
@@ -275,7 +275,7 @@ def cmd_fingerprint(args) -> int:
     except Exception as e:
         print(f"[err] fingerprint module unavailable: {e}", file=sys.stderr)
         return 1
-    target = Target(base_url=args.target, path=args.path, timeout=args.timeout,
+    target = Target(base_url=args.target, path=args.path, timeout=args.timeout, tls_verify=args.tls_verify,
                     block_signature=args.block_signature)
     guesses = fingerprint(target)
     bn = ui.banner(__version__)
@@ -305,7 +305,7 @@ def cmd_smuggle(args) -> int:
     print(ui.info("smuggle probe ") + ui.bold(args.target) + ui.gray(f"  path={args.path} timeout={args.timeout}s"))
     print(ui.gray("  (experimental timing-based desync detection · authorized targets only)"))
     print(ui.rule())
-    findings = detect(args.target, args.path, timeout=args.timeout, stall_factor=args.stall_factor)
+    findings = detect(args.target, args.path, timeout=args.timeout, tls_verify=args.tls_verify, stall_factor=args.stall_factor)
     any_hit = False
     for f in findings:
         mark = ui.red("● STALL") if f.suspected else ui.gray("○ ok   ")
@@ -350,6 +350,8 @@ def _add_target_args(p):
     p.add_argument("--path", default="/", help="request path on target")
     p.add_argument("--timeout", type=int, default=15)
     p.add_argument("--block-signature", default="Request blocked by RedEye")
+    p.add_argument("--tls-verify", action="store_true",
+                   help="enforce TLS certificate verification (default: off — for self-signed test targets)")
 
 
 def build_parser() -> argparse.ArgumentParser:

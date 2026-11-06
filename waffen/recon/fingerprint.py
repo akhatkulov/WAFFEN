@@ -147,7 +147,8 @@ def _curl_sender(target):
         url = t.url()
         qp = urllib.parse.urlencode({t.param: payload})
         sep = "&" if "?" in url else "?"
-        cmd = ["curl", "-sk", "-i", "-m", str(t.timeout), "-A", t.user_agent,
+        sec = t.curl_sec(with_i=True) if hasattr(t, "curl_sec") else "-ski"
+        cmd = ["curl", sec, "-m", str(t.timeout), "-A", t.user_agent,
                "-X", t.method, f"{url}{sep}{qp}"]
         try:
             out = subprocess.run(cmd, capture_output=True, text=True,

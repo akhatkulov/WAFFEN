@@ -40,7 +40,7 @@ def test_detect_flags_a_stall(monkeypatch=None):
     # fake send_raw: baseline fast; the first CL.TE probe stalls to timeout; rest fast
     calls = {"n": 0}
 
-    def fake(host, port, tls, raw, timeout=8.0):
+    def fake(host, port, tls, raw, timeout=8.0, verify=False):
         r = raw.decode("latin1")
         if r.startswith("GET"):  # baseline
             return {"status": "200", "elapsed": 0.10, "body": "", "error": None}
@@ -63,7 +63,7 @@ def test_detect_flags_a_stall(monkeypatch=None):
 
 
 def test_detect_no_false_positive_when_all_fast():
-    def fake(host, port, tls, raw, timeout=8.0):
+    def fake(host, port, tls, raw, timeout=8.0, verify=False):
         return {"status": "200", "elapsed": 0.12, "body": "", "error": None}
     orig = S.send_raw
     S.send_raw = fake

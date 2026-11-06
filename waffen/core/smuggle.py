@@ -63,13 +63,13 @@ class SmuggleFinding:
 
 
 def detect(base_url: str, path: str = "/", *, timeout: float = 8.0,
-           stall_factor: float = 3.0, on_event=None) -> list[SmuggleFinding]:
+           stall_factor: float = 3.0, tls_verify: bool = False, on_event=None) -> list[SmuggleFinding]:
     """Send a baseline + CL.TE/TE.CL probes (incl. TE obfuscations) and flag any
     whose response stalls far longer than the baseline — a desync signal."""
     host, port, tls, p = parse_target(base_url, path)
 
     def run(name, raw):
-        r = send_raw(host, port, tls, raw, timeout=timeout)
+        r = send_raw(host, port, tls, raw, timeout=timeout, verify=tls_verify)
         if on_event:
             on_event("probe", name=name, elapsed=r["elapsed"], status=r["status"], error=r.get("error"))
         return r

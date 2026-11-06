@@ -19,6 +19,7 @@ import base64
 import json as _json
 import re
 import random
+import secrets
 import subprocess
 import urllib.parse
 from dataclasses import dataclass
@@ -291,7 +292,8 @@ def _fetch_headers(target, payload: str, timeout: int | None = None) -> str:
         inject = getattr(t, "inject", "query")
         url = t.base_url.rstrip("/") + t.path
 
-        cmd = ["curl", "-sik", "-m", str(to), "-A", getattr(t, "user_agent", "WAFFEN/0.1")]
+        sec = t.curl_sec(with_i=True) if hasattr(t, "curl_sec") else "-sik"
+        cmd = ["curl", sec, "-m", str(to), "-A", getattr(t, "user_agent", "WAFFEN/0.1")]
         if inject == "query":
             qp = urllib.parse.urlencode({param: payload})
             sep = "&" if "?" in url else "?"
@@ -346,7 +348,7 @@ def _check_crlf(oracle, payload: str, attack_class: str) -> Verification:
 
     Neither signal present -> not confirmed.
     """
-    token = f"wfxcrlf{random.randint(100000, 999999)}"
+    token = f"wfxcrlf{secrets.token_hex(8)}"  # CSPRNG marker — unpredictable
     needle = f"{_CRLF_MARKER_NAME.lower()}: {token}".lower()
     variants = [
         payload + f"%0d%0a{_CRLF_MARKER_NAME}: {token}",

@@ -30,7 +30,7 @@ class RequestTransform:
 
 
 def _base(t: Target) -> list[str]:
-    return ["curl", "-sk", "-m", str(t.timeout),
+    return ["curl", t.curl_sec(), "-m", str(t.timeout),
             "-w", "\n%{http_code} %{size_download} %{time_total}",
             "-A", t.user_agent]
 

@@ -29,9 +29,18 @@ class Target:
     block_signature: str = "Request blocked by RedEye"
     timeout: int = 15
     user_agent: str = "WAFFEN/0.1 (+authorized-waf-testing)"
+    # TLS policy: WAF testers routinely hit self-signed / demo endpoints, so the
+    # default is insecure (curl -k), like every comparable tool. It is NOT silently
+    # scattered — it is this one explicit, overridable setting (CLI: --tls-verify).
+    tls_verify: bool = False
 
     def url(self) -> str:
         return self.base_url.rstrip("/") + self.path
+
+    def curl_sec(self, with_i: bool = False) -> str:
+        """The curl security flag for this target: -s/-sk, plus 'i' to include headers."""
+        flag = "-s" if self.tls_verify else "-sk"
+        return flag + ("i" if with_i else "")
 
 
 @dataclass
@@ -91,7 +100,7 @@ class Oracle:
             if argv:
                 return argv
         t = self.t
-        cmd = ["curl", "-sk", "-m", str(t.timeout),
+        cmd = ["curl", t.curl_sec(), "-m", str(t.timeout),
                "-w", "\n%{http_code} %{size_download} %{time_total}",
                "-A", t.user_agent]
         url = t.url()
