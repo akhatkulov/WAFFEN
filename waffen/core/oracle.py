@@ -211,6 +211,7 @@ class Oracle:
         # Canary ban check (see __init__ docstring note): a clean fast 403 ban looks
         # just like a normal BLOCKED verdict, so it must be checked against a payload
         # we *know* is benign, not inferred from this response alone.
+        canary_just_confirmed_ban = False
         if self.canary_payload is not None:
             self._since_canary += 1
             if self._since_canary >= self.canary_every:
@@ -218,10 +219,15 @@ class Oracle:
                 self.requests += 1
                 canary_resp = self._apply_calibration(self._sender(self.canary_payload))
                 self.ban_suspected = (canary_resp.verdict == BLOCKED)
+                canary_just_confirmed_ban = self.ban_suspected
 
-        if self.ban_suspected and self.backoff:
-            # much more aggressive than the plain-DOWN backoff below: we are very
-            # likely hammering a source the WAF has already shut out.
+        if canary_just_confirmed_ban and self.backoff:
+            # Pause hard right when a FRESH canary check confirms the ban — once per
+            # check, not on every intervening send. `ban_suspected` otherwise stays
+            # readable between checks (for a caller to notice and decide to stop) but
+            # must NOT re-trigger this sleep on every one of the next `canary_every`
+            # sends, or a suspected ban turns a run into an hours-long near-hang
+            # instead of a bounded pause-and-reassess.
             self._down_streak += 1
             _time.sleep(min(1.0 * (2 ** min(self._down_streak, 5)), 30.0))
         elif self.backoff:
@@ -233,26 +239,37 @@ class Oracle:
         return resp
 
     def send_many(self, payloads, concurrency: int = 8, delay: float = 0.0):
-        """Send many payloads concurrently; returns a list of Response in order.
+        """Send many payloads; returns a list of Response in the same order.
 
-        Lets a search strategy evaluate a whole frontier/generation in parallel.
-        `delay` throttles per-request (applied inside each worker before sending).
-        Note: the canary ban-check in `send()` does NOT run here (no stable request
-        ordering under concurrency) — use `send()` for long sequential runs where
-        ban detection matters.
+        Lets a search strategy or a bulk eval/dataset run evaluate a whole
+        batch in parallel. `delay` throttles per-request (applied before each send).
+
+        concurrency<=1 routes every send through `self.send()` — the same path
+        a sequential caller would use — so it gets canary ban-detection and
+        DOWN-backoff for free; this is what a large, unattended, log-collection
+        run over a full corpus should use. concurrency>1 uses a raw parallel
+        path with NEITHER (no stable request ordering under concurrency makes a
+        canary re-probe meaningless, and backoff would serialize the pool
+        anyway) — a deliberate tradeoff: pick concurrency=1 when ban detection
+        matters more than throughput, concurrency>1 when it doesn't.
         """
         import concurrent.futures as _cf
         import time as _time
         payloads = list(payloads)
+
+        if concurrency <= 1:
+            out = []
+            for p in payloads:
+                if delay:
+                    _time.sleep(delay)
+                out.append(self.send(p))
+            return out
 
         def one(p):
             if delay:
                 _time.sleep(delay)
             self.requests += 1
             return self._apply_calibration(self._sender(p))
-
-        if concurrency <= 1:
-            return [one(p) for p in payloads]
         with _cf.ThreadPoolExecutor(max_workers=concurrency) as ex:
             return list(ex.map(one, payloads))
 

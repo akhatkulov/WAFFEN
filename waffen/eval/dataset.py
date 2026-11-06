@@ -66,32 +66,43 @@ def _make_record(payload: str, label: str, attack_class: str, resp, target: Targ
 
 def build_dataset(target: Target, attack_cases, benign=None, *, calibration=None,
                    sender=None, concurrency: int = 6, delay: float = 0.0,
+                   canary_payload: str | None = None, canary_every: int = 25,
                    drop_down: bool = True, dedup: bool = True) -> dict:
     """Send attack + benign payloads at `target`, label them, return a dataset.
 
     `attack_cases` = iterable of (attack_class, payload) -> label "malicious".
     `benign`       = iterable of payload strings -> label "benign".
 
+    Benign is measured FIRST, before the attack flood: a long attack run can get
+    the test source rate-limited/banned, after which every subsequent request
+    (benign included) looks blocked — logging those as "benign: blocked" would
+    corrupt the one label a WAF-training dataset most needs to be reliable.
+
+    `canary_payload`/`canary_every`: with `concurrency<=1`, pass a known-benign
+    string to periodically re-verify the source hasn't been banned mid-run (a
+    ban usually looks like a clean, fast block, not a timeout) — see
+    `Oracle.send`. Has no effect at concurrency>1 (see `Oracle.send_many`).
+
     Returns {"records": [...], "stats": {total, kept, dropped_down, dup,
     malicious, benign}}.
     """
-    oracle = Oracle(target, sender=sender)
+    oracle = Oracle(target, sender=sender, canary_payload=canary_payload, canary_every=canary_every)
     attack_cases = list(attack_cases)
     benign = list(benign) if benign else []
 
     records: list[dict] = []
     total = len(attack_cases) + len(benign)
 
+    if benign:
+        responses = oracle.send_many(benign, concurrency=concurrency, delay=delay)
+        for payload, resp in zip(benign, responses):
+            records.append(_make_record(payload, "benign", "benign", resp, target, calibration))
+
     if attack_cases:
         classes, payloads = zip(*attack_cases)
         responses = oracle.send_many(payloads, concurrency=concurrency, delay=delay)
         for cls, payload, resp in zip(classes, payloads, responses):
             records.append(_make_record(payload, "malicious", cls, resp, target, calibration))
-
-    if benign:
-        responses = oracle.send_many(benign, concurrency=concurrency, delay=delay)
-        for payload, resp in zip(benign, responses):
-            records.append(_make_record(payload, "benign", "benign", resp, target, calibration))
 
     dropped_down = 0
     if drop_down:

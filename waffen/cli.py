@@ -294,7 +294,8 @@ def cmd_dataset(args) -> int:
     print(ui.rule())
 
     out = build_dataset(target, cases, benign=benign, calibration=calibration, sender=sender,
-                        concurrency=args.concurrency, delay=args.delay)
+                        concurrency=args.concurrency, delay=args.delay,
+                        canary_payload=args.canary or None, canary_every=args.canary_every)
     records, stats = out["records"], out["stats"]
     bal = class_balance(records)
     print(ui.info("records  ") + ui.bold(str(stats["kept"]))
@@ -539,6 +540,10 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--calibrate", action="store_true", help="learn block/pass signature first")
     d.add_argument("--concurrency", type=int, default=6)
     d.add_argument("--delay", type=float, default=0.0)
+    d.add_argument("--canary", default="",
+                   help="a known-BENIGN value to re-probe periodically (ban-onset detector); "
+                        "only effective at --concurrency 1")
+    d.add_argument("--canary-every", type=int, default=25)
     d.add_argument("--split", type=float, default=0.0, help="val fraction for a stratified train/val split")
     d.add_argument("--out", default="dataset", help="output prefix (writes <out>.jsonl/.csv)")
     d.set_defaults(func=cmd_dataset)
