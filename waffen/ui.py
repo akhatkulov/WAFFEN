@@ -35,8 +35,10 @@ def dim(t): return style(t, "dim")
 def red(t): return style(t, "bred")
 def green(t): return style(t, "bgreen")
 def yellow(t): return style(t, "byellow")
-def cyan(t): return style(t, "bcyan")
-def magenta(t): return style(t, "bmagenta")
+# red-team palette: the decorative accents are red. `cyan`/`magenta` are kept as
+# names so call sites don't change, but both now render red (bright / normal).
+def cyan(t): return style(t, "bred")
+def magenta(t): return style(t, "red")
 def gray(t): return style(t, "gray")
 
 
@@ -63,7 +65,7 @@ def banner(version: str = "", *, force: bool = False) -> str:
     if not COLOR and not force:
         return ""
     art = style(_BANNER, "bred", "bold") if COLOR else _BANNER
-    rifle = style(_RIFLE, "gray") if COLOR else _RIFLE
+    rifle = style(_RIFLE, "red") if COLOR else _RIFLE
     tag = "   WAF evasion-path finder " + _EYE + "  ·  authorized targets only"
     sub = f"   v{version}" if version else ""
     tagline = style(tag, "gray") if COLOR else tag
@@ -73,9 +75,9 @@ def banner(version: str = "", *, force: bool = False) -> str:
 
 def rule(label: str = "", width: int = 60) -> str:
     if not label:
-        return gray("─" * width)
+        return style("─" * width, "red")
     line = f"── {label} " + "─" * max(0, width - len(label) - 4)
-    return style(line, "gray")
+    return style(line, "red", "bold")
 
 
 def bar(pct: float, width: int = 22, good_high: bool = True) -> str:

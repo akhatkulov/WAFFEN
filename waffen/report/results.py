@@ -51,7 +51,7 @@ def print_engine_summary(runs) -> None:
         if not res.findings:
             print("  " + ui.gray("○ ") + head + ui.gray(f"  → no bypass ({res.requests} req)"))
             continue
-        print("  " + ui.bold(ui.green("● ")) + head
+        print("  " + ui.bold(ui.red("● ")) + head
               + "  → " + ui.bold(f"{len(res.findings)} bypass(es)") + ui.gray(f" ({res.requests} req)"))
         for find in res.findings:
             chain = ui.cyan(" → ".join(find.chain)) if find.chain else ui.gray("(raw)")
