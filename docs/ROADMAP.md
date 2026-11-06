@@ -13,6 +13,14 @@ orchestrator, 37 tests — all validated against the mock WAF only.
 > 138 mutators, runtime calibration. Benchmark (mock, XSS, budget 300): beam 1200
 > reqs → genetic 315 → **bestfirst 22**, all seeds solved.
 >
+> **Sprint 3 — DONE (2026-11):** +23 mutators (**161** total, SQLMap+PortSwigger superset),
+> D2 **structural transforms** + WAFFLED **3-part oracle**, D3 **raw-socket HTTP
+> smuggling** (`waffen smuggle`, experimental), **training export** (`waffen dataset`
+> — closes the original WAF-training goal), **eval HTML report**, oracle throttle+backoff,
+> LICENSE + pytest (138 tests). 8 subcommands. Committed on `feat/waffen-core`.
+> Still needs: a real **live validation** sweep vs juice-shop (requires clearing the
+> test-source ban), API-vs-App scoring, KB auto-update (E1), concurrency in search.
+>
 > **Sprint 2 — DONE (2026-11):** A4 **MCTS+CFG** strategy (binary feedback, UCB,
 > geometric decay). First **live run vs juice-shop** validated the pipeline AND
 > exposed that search halted on a semantically-dead bypass — so **verified search**
