@@ -119,6 +119,19 @@ def run_eval(target: Target, cases, *, benign=None, calibration=None, sender=Non
     res = EvalResult(target=target.base_url)
     oracle = Oracle(target, sender=sender)
 
+    # Measure benign traffic FIRST, on a still-clean source: a long attack run can
+    # get the test IP rate-limited/banned, after which benign requests would all look
+    # "blocked" and the false-positive rate would be meaningless. Benign-before-attacks
+    # keeps the FP number trustworthy even if the attack phase later trips a ban.
+    if benign:
+        benign = list(benign)
+        res.benign_total = len(benign)
+        for resp in oracle.send_many(benign, concurrency=concurrency, delay=delay):
+            if _classify(resp, calibration) == "block":
+                res.benign_blocked += 1  # benign blocked == false positive
+        if on_event:
+            on_event("benign_done", total=res.benign_total, blocked=res.benign_blocked)
+
     # group payloads by class, send per class (concurrently)
     by_cls: dict[str, list[str]] = {}
     for cls, payload in cases:
@@ -143,15 +156,5 @@ def run_eval(target: Target, cases, *, benign=None, calibration=None, sender=Non
         if on_event:
             on_event("class_done", attack_class=cls, blocked=score.blocked,
                      through=score.through, coverage=round(score.coverage, 1))
-
-    if benign:
-        benign = list(benign)
-        res.benign_total = len(benign)
-        responses = oracle.send_many(benign, concurrency=concurrency, delay=delay)
-        for resp in responses:
-            if _classify(resp, calibration) == "block":
-                res.benign_blocked += 1  # benign blocked == false positive
-        if on_event:
-            on_event("benign_done", total=res.benign_total, blocked=res.benign_blocked)
 
     return res
