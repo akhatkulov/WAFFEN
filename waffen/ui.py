@@ -59,6 +59,9 @@ _RIFLE = r"""
                                                        l"""
 
 
+_AUTHOR = "   By Akhatkulov (Me262) — Offensive Security Engineer"
+
+
 def banner(version: str = "", *, force: bool = False) -> str:
     """The WAFFEN banner. Empty string when colour/TTY is off (keeps pipes clean),
     unless force=True (e.g. the `version` command always shows it)."""
@@ -66,11 +69,12 @@ def banner(version: str = "", *, force: bool = False) -> str:
         return ""
     art = style(_BANNER, "bred", "bold") if COLOR else _BANNER
     rifle = style(_RIFLE, "red") if COLOR else _RIFLE
+    author = style(_AUTHOR, "red", "bold") if COLOR else _AUTHOR
     tag = "   WAF evasion-path finder " + _EYE + "  ·  authorized targets only"
     sub = f"   v{version}" if version else ""
     tagline = style(tag, "gray") if COLOR else tag
     subline = style(sub, "dim") if COLOR else sub
-    return f"{art}\n{rifle}\n{tagline}{('   ' + subline) if sub else ''}\n"
+    return f"{art}\n{rifle}\n{author}\n{tagline}{('   ' + subline) if sub else ''}\n"
 
 
 def rule(label: str = "", width: int = 60) -> str:
