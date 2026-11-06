@@ -60,13 +60,17 @@ class Oracle:
     set, it builds the curl argv in place of the default injection logic.
     """
 
-    def __init__(self, target: Target, sender=None, request_transform=None, calibration=None):
+    def __init__(self, target: Target, sender=None, request_transform=None, calibration=None,
+                 delay: float = 0.0, backoff: bool = True):
         self.t = target
         self._sender = sender or self._curl_send
         self.request_transform = request_transform
         # optional learned block/pass model (verify.calibrate.Calibration); when set and
         # it detected a WAF, it REPLACES the naive 403-based verdict.
         self.calibration = calibration
+        self.delay = delay          # fixed throttle between requests (be a good neighbour)
+        self.backoff = backoff      # exponential backoff on consecutive DOWN (avoid hammering a struggling/ban-dropping WAF)
+        self._down_streak = 0
         self.requests = 0
 
     _CAL_MAP = {"block": BLOCKED, "pass": THROUGH, "unresolved": BLOCKED}
@@ -142,8 +146,18 @@ class Oracle:
 
     # -- public API -----------------------------------------------------------
     def send(self, payload: str) -> Response:
+        import time as _time
+        if self.delay:
+            _time.sleep(self.delay)
         self.requests += 1
-        return self._apply_calibration(self._sender(payload))
+        resp = self._apply_calibration(self._sender(payload))
+        if self.backoff:
+            if resp.verdict == DOWN:
+                self._down_streak += 1
+                _time.sleep(min(0.2 * (2 ** self._down_streak), 5.0))
+            else:
+                self._down_streak = 0
+        return resp
 
     def send_many(self, payloads, concurrency: int = 8, delay: float = 0.0):
         """Send many payloads concurrently; returns a list of Response in order.

@@ -55,7 +55,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                transform_names=None, all_mutators: bool = False,
                width: int = 6, depth: int = 4,
                pop_size: int = 20, generations: int = 8, branch: int = 4,
-               iterations: int = 200, rollout_depth: int = 3,
+               iterations: int = 200, rollout_depth: int = 3, delay: float = 0.0,
                max_requests: int = 400, stop_on_first: bool = False,
                timing_threshold: float | None = None, do_calibrate: bool = False,
                do_learn: bool = False,
@@ -86,7 +86,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                          n_recommended=len(getattr(norm_profile, "recommended_mutators", []) or []))
 
         for cls, payload in seeds:
-            oracle = Oracle(target, sender=sender, request_transform=rt, calibration=cal)
+            oracle = Oracle(target, sender=sender, request_transform=rt, calibration=cal, delay=delay)
             mutators = _mutators_for(cls, all_mutators)
             if norm_profile is not None and _reorder is not None:
                 mutators = _reorder(mutators, norm_profile)

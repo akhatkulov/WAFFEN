@@ -9,5 +9,7 @@ from __future__ import annotations
 
 from .verifier import Verification, verify
 from .calibrate import Calibration, calibrate
+from .structural import StructuralVerification, verify_structural, landed as structural_landed
 
-__all__ = ["Verification", "verify", "Calibration", "calibrate"]
+__all__ = ["Verification", "verify", "Calibration", "calibrate",
+           "StructuralVerification", "verify_structural", "structural_landed"]

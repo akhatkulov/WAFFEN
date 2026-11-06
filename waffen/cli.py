@@ -86,7 +86,7 @@ def cmd_bypass(args) -> int:
         strategy=args.strategy, transform_names=transform_names, all_mutators=args.all_mutators,
         width=args.width, depth=args.depth,
         pop_size=args.pop_size, generations=args.generations, branch=args.branch,
-        iterations=args.iterations, rollout_depth=args.rollout_depth,
+        iterations=args.iterations, rollout_depth=args.rollout_depth, delay=args.delay,
         max_requests=args.max_requests, stop_on_first=args.stop_on_first,
         do_calibrate=args.calibrate, do_learn=args.learn,
         do_verify=args.verify and not args.mock, sender=sender, on_event=ev,
@@ -194,6 +194,78 @@ def cmd_eval(args) -> int:
     return 0
 
 
+def cmd_dataset(args) -> int:
+    from pathlib import Path as _P
+    from .eval.dataset import build_dataset, stratified_split, write_jsonl, write_csv, class_balance
+    if not args.mock and not args.target:
+        print("[err] --target is required (or --mock)", file=sys.stderr)
+        return 2
+    # attack cases
+    cases = []
+    if args.corpus:
+        if not _P(args.corpus).exists():
+            print(f"[err] corpus dir not found: {args.corpus}", file=sys.stderr); return 2
+        for cls, payloads in eval_corpus.harvest(args.corpus, max_per_class=args.max_per_class).items():
+            cases += [(cls, p) for p in payloads]
+    else:
+        classes = kb_seeds.classes() if args.all_classes else ([args.attack_class] if args.attack_class else [])
+        for c in classes:
+            cases += [(c, p) for p in kb_seeds.seeds_for(c)]
+    if not cases:
+        print("[err] give --class, --all-classes, or --corpus DIR", file=sys.stderr); return 2
+    benign = None
+    if args.benign:
+        bf = _P(args.benign)
+        if not bf.exists():
+            print(f"[err] benign file not found: {args.benign}", file=sys.stderr); return 2
+        benign = [l for l in bf.read_text(errors="replace").splitlines()
+                  if l.strip() and not l.lstrip().startswith("#")]
+
+    target = Target(base_url=args.target or "mock://local", path=args.path, param=args.param,
+                    method=args.method, inject=args.inject, block_signature=args.block_signature,
+                    timeout=args.timeout)
+    sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
+    calibration = None
+    if args.calibrate:
+        try:
+            from .verify.calibrate import calibrate
+            from .core.oracle import Oracle as _O
+            calibration = calibrate(_O(target, sender=sender))
+        except Exception as e:
+            print(f"[warn] calibration failed: {e}", file=sys.stderr)
+
+    b = ui.banner(__version__)
+    if b: print(b)
+    print(ui.info("dataset  ") + ui.gray(f"attack={len(cases)} benign={len(benign) if benign else 0} "
+                                          f"target={'MOCK' if args.mock else target.base_url}"))
+    if not benign:
+        print(ui.warn("no --benign given: dataset has only malicious samples. A WAF trained on one "
+                      "class can't learn a boundary — add a benign set (from an UN-banned source)."))
+    print(ui.rule())
+
+    out = build_dataset(target, cases, benign=benign, calibration=calibration, sender=sender,
+                        concurrency=args.concurrency, delay=args.delay)
+    records, stats = out["records"], out["stats"]
+    bal = class_balance(records)
+    print(ui.info("records  ") + ui.bold(str(stats["kept"]))
+          + ui.gray(f"  (malicious={stats['malicious']} benign={stats['benign']} "
+                    f"dropped_down={stats['dropped_down']} dup={stats['dup']})"))
+    ratio = bal.get("ratio_malicious_to_benign")
+    if ratio is not None and ratio > 5:
+        print(ui.warn(f"class imbalance {ratio:.1f}:1 — consider more benign or downsampling attacks"))
+
+    base = args.out or "dataset"
+    if args.split > 0:
+        train, val = stratified_split(records, args.split)
+        write_jsonl(train, f"{base}_train.jsonl"); write_jsonl(val, f"{base}_val.jsonl")
+        write_csv(train, f"{base}_train.csv"); write_csv(val, f"{base}_val.csv")
+        print("\n" + ui.ok(f"wrote {base}_train.(jsonl|csv) n={len(train)} · {base}_val.(jsonl|csv) n={len(val)}"))
+    else:
+        write_jsonl(records, f"{base}.jsonl"); write_csv(records, f"{base}.csv")
+        print("\n" + ui.ok(f"wrote {base}.jsonl and {base}.csv  (n={len(records)})"))
+    return 0
+
+
 def cmd_fingerprint(args) -> int:
     if not args.target:
         print("[err] --target is required", file=sys.stderr)
@@ -219,6 +291,31 @@ def cmd_fingerprint(args) -> int:
         padded = f"{name:30}"
         label = ui.bold(ui.cyan(padded)) if i == 0 else padded
         print(f"  {ui.bar(conf*100, width=12)} {conf:.2f}  {label} " + ui.gray(getattr(g, "evidence", "")))
+    return 0
+
+
+def cmd_smuggle(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .core.smuggle import detect
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("smuggle probe ") + ui.bold(args.target) + ui.gray(f"  path={args.path} timeout={args.timeout}s"))
+    print(ui.gray("  (experimental timing-based desync detection · authorized targets only)"))
+    print(ui.rule())
+    findings = detect(args.target, args.path, timeout=args.timeout, stall_factor=args.stall_factor)
+    any_hit = False
+    for f in findings:
+        mark = ui.red("● STALL") if f.suspected else ui.gray("○ ok   ")
+        any_hit = any_hit or f.suspected
+        print(f"  {mark}  {ui.bold(f.name):22} " + ui.gray(f.detail))
+    print(ui.rule())
+    if any_hit:
+        print(ui.warn("possible request-smuggling desync — investigate manually (timing is noisy)"))
+    else:
+        print(ui.ok("no desync signal (no stall vs baseline)"))
     return 0
 
 
@@ -286,6 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--pop-size", type=int, default=20, help="genetic: population size")
     b.add_argument("--generations", type=int, default=8, help="genetic: generations")
     b.add_argument("--max-requests", type=int, default=400, help="request budget per run")
+    b.add_argument("--delay", type=float, default=0.0, help="seconds between requests (throttle; avoids self-ban)")
     b.add_argument("--stop-on-first", action="store_true", help="stop a run at its first bypass")
     b.add_argument("--all-mutators", action="store_true", help="ignore per-class mutator filtering")
     b.add_argument("--verbose", action="store_true", help="print search events")
@@ -310,6 +408,31 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--out", default="", help="write coverage JSON (+ .through.txt gaps) here")
     e.add_argument("--html", default="", help="write a styled standalone HTML coverage report here")
     e.set_defaults(func=cmd_eval)
+
+    d = sub.add_parser("dataset", help="build a labelled attack+benign training set (for WAF training)")
+    _add_target_args(d)
+    d.add_argument("--mock", action="store_true", help="use the built-in mock WAF")
+    d.add_argument("--class", dest="attack_class", default="", help="attack class (KB seeds)")
+    d.add_argument("--all-classes", action="store_true", help="all built-in KB seeds")
+    d.add_argument("--corpus", default="", help="PayloadsAllTheThings-style dir to harvest attacks from")
+    d.add_argument("--max-per-class", type=int, default=0)
+    d.add_argument("--benign", default="", help="file of benign values (label=benign); use an UN-banned source")
+    d.add_argument("--param", default="q")
+    d.add_argument("--method", default="GET")
+    d.add_argument("--inject", default="query",
+                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie"])
+    d.add_argument("--calibrate", action="store_true", help="learn block/pass signature first")
+    d.add_argument("--concurrency", type=int, default=6)
+    d.add_argument("--delay", type=float, default=0.0)
+    d.add_argument("--split", type=float, default=0.0, help="val fraction for a stratified train/val split")
+    d.add_argument("--out", default="dataset", help="output prefix (writes <out>.jsonl/.csv)")
+    d.set_defaults(func=cmd_dataset)
+
+    sm = sub.add_parser("smuggle", help="experimental: timing-based HTTP request-smuggling (desync) probes")
+    _add_target_args(sm)
+    sm.add_argument("--stall-factor", type=float, default=3.0,
+                    help="flag a probe whose response is this-times slower than baseline")
+    sm.set_defaults(func=cmd_smuggle)
 
     fp = sub.add_parser("fingerprint", help="identify the WAF in front of a target")
     _add_target_args(fp)

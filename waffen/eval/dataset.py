@@ -1,0 +1,182 @@
+"""Training-set export — WAFFEN's original purpose.
+
+Ports the standalone `make_dataset.py` concept into the tool: fire labelled
+attack and benign traffic at a target, record the *exact* payload sent plus
+the oracle's verdict, and emit a clean (text, label) dataset the RedEye team
+can train their own WAF model on.
+
+IMPORTANT: this only produces a valid dataset when measured against the
+team's own infrastructure. In particular, benign traffic must be sent from a
+source the target has NOT already banned/rate-limited/fingerprinted — a
+banned-source skew would mislabel ordinary, legitimate requests as whatever
+a block page returns, poisoning the "benign" class before training even
+starts. Always sanity-check the benign block rate (see `class_balance` /
+`EvalResult.fp_rate` in `coverage.py`) before shipping a dataset.
+
+Record schema (one dict per sent payload):
+    text        - the payload string (primary feature for the classifier)
+    label       - "malicious" | "benign"
+    attack_class- source attack class, or "benign" for benign rows
+    verdict     - "block" | "pass" | "unresolved" | "down"
+    http_code   - response status code (string, as returned by the oracle)
+    method      - HTTP method used
+    url         - target URL the payload was sent against
+    inject      - injection point ("query", "body", "header", ...)
+    resp_size   - response body size in bytes
+"""
+from __future__ import annotations
+
+import csv
+import json
+import random
+from collections import Counter
+
+from ..core.oracle import Oracle, Target
+
+_VERDICT_MAP = {"BLOCKED": "block", "THROUGH": "pass", "DOWN": "down"}
+
+FIELDS = ["text", "label", "attack_class", "verdict", "http_code",
+          "method", "url", "inject", "resp_size"]
+
+
+def _classify(resp, calibration) -> str:
+    """Map a Response to block|pass|unresolved|down, preferring calibration."""
+    if calibration is not None and getattr(calibration, "waf_detected", False):
+        try:
+            return calibration.classify(resp)
+        except Exception:
+            pass
+    return _VERDICT_MAP.get(resp.verdict, "pass")
+
+
+def _make_record(payload: str, label: str, attack_class: str, resp, target: Target,
+                  calibration) -> dict:
+    return {
+        "text": payload,
+        "label": label,
+        "attack_class": attack_class,
+        "verdict": _classify(resp, calibration),
+        "http_code": resp.code,
+        "method": target.method,
+        "url": target.url(),
+        "inject": target.inject,
+        "resp_size": resp.size,
+    }
+
+
+def build_dataset(target: Target, attack_cases, benign=None, *, calibration=None,
+                   sender=None, concurrency: int = 6, delay: float = 0.0,
+                   drop_down: bool = True, dedup: bool = True) -> dict:
+    """Send attack + benign payloads at `target`, label them, return a dataset.
+
+    `attack_cases` = iterable of (attack_class, payload) -> label "malicious".
+    `benign`       = iterable of payload strings -> label "benign".
+
+    Returns {"records": [...], "stats": {total, kept, dropped_down, dup,
+    malicious, benign}}.
+    """
+    oracle = Oracle(target, sender=sender)
+    attack_cases = list(attack_cases)
+    benign = list(benign) if benign else []
+
+    records: list[dict] = []
+    total = len(attack_cases) + len(benign)
+
+    if attack_cases:
+        classes, payloads = zip(*attack_cases)
+        responses = oracle.send_many(payloads, concurrency=concurrency, delay=delay)
+        for cls, payload, resp in zip(classes, payloads, responses):
+            records.append(_make_record(payload, "malicious", cls, resp, target, calibration))
+
+    if benign:
+        responses = oracle.send_many(benign, concurrency=concurrency, delay=delay)
+        for payload, resp in zip(benign, responses):
+            records.append(_make_record(payload, "benign", "benign", resp, target, calibration))
+
+    dropped_down = 0
+    if drop_down:
+        kept = [r for r in records if r["verdict"] != "down"]
+        dropped_down = len(records) - len(kept)
+        records = kept
+
+    dup = 0
+    if dedup:
+        seen = set()
+        deduped = []
+        for r in records:
+            key = (r["text"], r["inject"])
+            if key in seen:
+                dup += 1
+                continue
+            seen.add(key)
+            deduped.append(r)
+        records = deduped
+
+    malicious = sum(1 for r in records if r["label"] == "malicious")
+    benign_n = sum(1 for r in records if r["label"] == "benign")
+
+    stats = {
+        "total": total,
+        "kept": len(records),
+        "dropped_down": dropped_down,
+        "dup": dup,
+        "malicious": malicious,
+        "benign": benign_n,
+    }
+    return {"records": records, "stats": stats}
+
+
+def stratified_split(records: list[dict], val_fraction: float = 0.2, seed: int = 42):
+    """Split records into (train, val), preserving the label ratio in each.
+
+    Splits within each label group independently so both labels are present
+    in train and val (as long as each label has at least 2 records).
+    """
+    rng = random.Random(seed)
+    by_label: dict[str, list[dict]] = {}
+    for r in records:
+        by_label.setdefault(r["label"], []).append(r)
+
+    train, val = [], []
+    for label, group in by_label.items():
+        group = group[:]
+        rng.shuffle(group)
+        n_val = int(round(len(group) * val_fraction))
+        # keep at least one sample in train when possible, and don't force a
+        # val split for a single-item group.
+        if len(group) > 1:
+            n_val = min(n_val, len(group) - 1)
+        else:
+            n_val = 0
+        val.extend(group[:n_val])
+        train.extend(group[n_val:])
+
+    rng.shuffle(train)
+    rng.shuffle(val)
+    return train, val
+
+
+def write_jsonl(records: list[dict], path: str) -> None:
+    """Write records as newline-delimited JSON (one object per line)."""
+    with open(path, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=True) + "\n")
+
+
+def write_csv(records: list[dict], path: str) -> None:
+    """Write records as CSV with a stable column order (see FIELDS)."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for r in records:
+            writer.writerow(r)
+
+
+def class_balance(records: list[dict]) -> dict:
+    """Return {label: count, ..., "ratio_malicious_to_benign": float|None}."""
+    counts = Counter(r["label"] for r in records)
+    result = dict(counts)
+    malicious = counts.get("malicious", 0)
+    benign = counts.get("benign", 0)
+    result["ratio_malicious_to_benign"] = (malicious / benign) if benign else None
+    return result
