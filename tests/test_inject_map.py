@@ -1,8 +1,31 @@
 """Tests for per-class injection routing (kb/inject_map.py) and --inject auto end-to-end."""
 from waffen.core.mock import make_mock_sender
 from waffen.core.oracle import Target
-from waffen.kb.inject_map import effective, recommended
+from waffen.kb.inject_map import effective, recommended, resolve_base
 from waffen.eval.dataset import build_dataset
+
+
+def test_resolve_base_auto_to_query():
+    t = Target(base_url="x", inject="auto", path="/p", param="z")
+    rb = resolve_base(t)
+    assert rb.inject == "query" and rb.path == "/p" and rb.param == "z"
+    assert t.inject == "auto"                             # original untouched
+
+
+def test_resolve_base_noop_for_concrete_inject():
+    t = Target(base_url="x", inject="body")
+    assert resolve_base(t) is t
+
+
+def test_calibration_under_auto_does_not_crash(tmp_path):
+    # regression: `--inject auto` + calibration used to raise "unknown inject mode:
+    # auto" because the class-less calibration probe sent with inject='auto'. It must
+    # now resolve to query and complete cleanly.
+    from waffen.verify.calibrate import calibrate
+    from waffen.core.oracle import Oracle
+    t = Target(base_url="mock://x", inject="auto")
+    cal = calibrate(Oracle(resolve_base(t), sender=make_mock_sender()))
+    assert cal is not None  # no exception raised
 
 
 def test_recommended_known_and_unknown():

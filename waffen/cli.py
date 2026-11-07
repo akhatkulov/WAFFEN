@@ -168,7 +168,8 @@ def cmd_eval(args) -> int:
         try:
             from .verify.calibrate import calibrate
             from .core.oracle import Oracle as _O
-            calibration = calibrate(_O(target, sender=sender))
+            from .kb.inject_map import resolve_base as _rb
+            calibration = calibrate(_O(_rb(target), sender=sender))
             print(f"[*] calibrated: waf_detected={getattr(calibration,'waf_detected',None)} "
                   f"confidence={getattr(calibration,'confidence',None)}")
         except Exception as e:
@@ -281,7 +282,8 @@ def cmd_dataset(args) -> int:
         try:
             from .verify.calibrate import calibrate
             from .core.oracle import Oracle as _O
-            calibration = calibrate(_O(target, sender=sender))
+            from .kb.inject_map import resolve_base as _rb
+            calibration = calibrate(_O(_rb(target), sender=sender))
         except Exception as e:
             print(f"[warn] calibration failed: {e}", file=sys.stderr)
 

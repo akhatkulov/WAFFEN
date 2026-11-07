@@ -66,12 +66,17 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
     runs: list[BypassRun] = []
     transforms = T.select(set(transform_names) if transform_names else None)
 
+    # calibration / normalization probes are class-less, so resolve --inject auto
+    # to a concrete mode (query) for them; per-class routing applies to the seeds below.
+    from .kb.inject_map import resolve_base as _resolve_base
+    probe_target = _resolve_base(target)
+
     for tr in transforms:
         rt = None if tr.name == "identity" else tr
         cal = None
         tt = timing_threshold
         if do_calibrate and _calibrate is not None:
-            cal = _calibrate(Oracle(target, sender=sender, request_transform=rt))
+            cal = _calibrate(Oracle(probe_target, sender=sender, request_transform=rt))
             if getattr(cal, "timing_reliable", False):
                 tt = getattr(cal, "timing_threshold", None)
             if on_event:
@@ -81,7 +86,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
 
         norm_profile = None
         if do_learn and _learn_norm is not None:
-            norm_profile = _learn_norm(Oracle(target, sender=sender, request_transform=rt, calibration=cal))
+            norm_profile = _learn_norm(Oracle(probe_target, sender=sender, request_transform=rt, calibration=cal))
             if on_event:
                 on_event("learned", transform=tr.name,
                          blind_to=getattr(norm_profile, "blind_to", None),

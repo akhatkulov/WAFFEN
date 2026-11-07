@@ -34,6 +34,16 @@ def recommended(attack_class: str) -> dict | None:
     return INJECT_MAP.get(attack_class)
 
 
+def resolve_base(target):
+    """Resolve `--inject auto` to a concrete inject for CLASS-LESS sends (calibration,
+    normalization probes, canary) that must pick one mode. 'auto' -> 'query'; any
+    explicit mode is returned unchanged."""
+    import dataclasses
+    if getattr(target, "inject", None) == "auto":
+        return dataclasses.replace(target, inject="query")
+    return target
+
+
 def effective(base_target, attack_class):
     """Return a Target for this class under `--inject auto`.
 
