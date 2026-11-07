@@ -86,7 +86,13 @@ def build_dataset(target: Target, attack_cases, benign=None, *, calibration=None
     Returns {"records": [...], "stats": {total, kept, dropped_down, dup,
     malicious, benign}}.
     """
-    oracle = Oracle(target, sender=sender, canary_payload=canary_payload, canary_every=canary_every)
+    import dataclasses as _dc
+    from ..kb.inject_map import effective as _eff
+    auto = getattr(target, "inject", None) == "auto"
+    # the base oracle serves benign + the canary; "auto" isn't a concrete inject mode,
+    # so resolve it to `query` for them (per-class auto routing applies to attacks only).
+    base_target = _dc.replace(target, inject="query") if auto else target
+    oracle = Oracle(base_target, sender=sender, canary_payload=canary_payload, canary_every=canary_every)
     attack_cases = list(attack_cases)
     benign = list(benign) if benign else []
 
@@ -96,13 +102,21 @@ def build_dataset(target: Target, attack_cases, benign=None, *, calibration=None
     if benign:
         responses = oracle.send_many(benign, concurrency=concurrency, delay=delay)
         for payload, resp in zip(benign, responses):
-            records.append(_make_record(payload, "benign", "benign", resp, target, calibration))
+            records.append(_make_record(payload, "benign", "benign", resp, base_target, calibration))
 
     if attack_cases:
-        classes, payloads = zip(*attack_cases)
-        responses = oracle.send_many(payloads, concurrency=concurrency, delay=delay)
-        for cls, payload, resp in zip(classes, payloads, responses):
-            records.append(_make_record(payload, "malicious", cls, resp, target, calibration))
+        # group by class so --inject auto can route each class to its right point;
+        # for a fixed inject this still works (one group per class, shared oracle).
+        by_cls: dict[str, list[str]] = {}
+        for cls, payload in attack_cases:
+            by_cls.setdefault(cls, []).append(payload)
+        for cls, payloads in by_cls.items():
+            cls_target = _eff(target, cls) if auto else target
+            cls_oracle = Oracle(cls_target, sender=sender,
+                                canary_payload=canary_payload, canary_every=canary_every) if auto else oracle
+            responses = cls_oracle.send_many(payloads, concurrency=concurrency, delay=delay)
+            for payload, resp in zip(payloads, responses):
+                records.append(_make_record(payload, "malicious", cls, resp, cls_target, calibration))
 
     dropped_down = 0
     if drop_down:

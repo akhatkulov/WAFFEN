@@ -84,6 +84,35 @@ def test_kb_update_rejects_half_configured_source_gracefully():
     assert code == 0
 
 
+def test_inject_auto_accepted_by_bypass_eval_dataset():
+    p = build_parser()
+    for sub in ("bypass", "eval", "dataset"):
+        ns = p.parse_args([sub, "--inject", "auto"])
+        assert ns.inject == "auto"
+
+
+def test_analyze_offline_on_a_written_log(tmp_path):
+    import json
+    log = tmp_path / "log.jsonl"
+    recs = [
+        {"text": "<script>", "label": "malicious", "attack_class": "XSS Injection",
+         "verdict": "pass", "http_code": "200", "method": "GET",
+         "url": "https://x/search", "inject": "query", "resp_size": 10},
+        {"text": "' OR 1=1", "label": "malicious", "attack_class": "SQL Injection",
+         "verdict": "block", "http_code": "403", "method": "GET",
+         "url": "https://x/search", "inject": "query", "resp_size": 6000},
+        {"text": "banana", "label": "benign", "attack_class": "benign",
+         "verdict": "pass", "http_code": "200", "method": "GET",
+         "url": "https://x/search", "inject": "query", "resp_size": 10},
+    ]
+    log.write_text("\n".join(json.dumps(r) for r in recs) + "\n")
+    html = tmp_path / "report.html"
+    code, out = _run(["analyze", str(log), "--html", str(html)])
+    assert code == 0
+    assert "COVERAGE" in out and "3 records" in out
+    assert html.exists() and html.read_text().startswith("<!doctype html>")
+
+
 def test_transforms_lists_graphql_placeholder():
     code, out = _run(["transforms"])
     assert code == 0

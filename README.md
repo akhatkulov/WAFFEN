@@ -184,11 +184,16 @@ ban during the attack phase can't silently inflate the false-positive number.
 | `--find-cutoff` | off | binary-search the **real** body-inspection cutoff against the live target (nowafpls-style) instead of guessing; ignored with `--mock` |
 | `--cutoff-probes N` | `12` | request budget for `--find-cutoff` |
 
+`--inject auto` routes each attack class to its correct injection point in one run
+(Directory Traversal → URL path, Upload Insecure Files → multipart upload, SQLi/
+XSS/etc. → query) — so a full-corpus run doesn't score path/upload classes near-zero
+just because they were forced through `?q=`.
+
 ```bash
-# full corpus + benign set, calibrated, with an HTML report
+# full corpus + benign set, calibrated, per-class injection routing, HTML report
 waffen eval --target https://your-waf.example --all-classes \
   --corpus ./PayloadsAllTheThings --benign benign.txt \
-  --calibrate --inject query --path /search \
+  --calibrate --inject auto \
   --out coverage.json --html coverage.html
 
 # quick built-in-seed check with a rule report for any gap found
@@ -213,9 +218,28 @@ Shares `--class`/`--all-classes`/`--corpus`/`--max-per-class`/`--benign`/`--inje
 | `--out PREFIX` | `dataset` | output prefix — writes `<out>.jsonl`/`.csv`, or `<out>_train`/`_val` with `--split` |
 
 ```bash
-waffen dataset --target https://your-waf.example --all-classes \
-  --benign benign.txt --calibrate --split 0.2 --out waf_training
-# -> waf_training_train.jsonl/.csv, waf_training_val.jsonl/.csv
+waffen dataset --target https://your-waf.example --all-classes --inject auto \
+  --benign benign.txt --calibrate --canary "harmless value" --split 0.2 \
+  --concurrency 1 --delay 0.05 --out logs/waf_training
+# -> logs/waf_training_train.jsonl/.csv, logs/waf_training_val.jsonl/.csv
+```
+
+---
+
+### `waffen analyze` — read a collected log offline
+
+Turn a `dataset` JSONL log into a coverage/FP report **without re-hitting the
+target** — per-class coverage, false-positive rate, a ban-contamination heuristic,
+optional HTML report and WAF-rule suggestions. All offline, no network.
+
+| Flag | Meaning |
+|---|---|
+| `<log>` (positional) | path to a `.jsonl` written by `waffen dataset` |
+| `--html FILE` | write the same styled HTML coverage report `eval` produces |
+| `--rules` / `--rules-out FILE` | suggested WAF rule per coverage gap, console or Markdown |
+
+```bash
+waffen analyze logs/waf_training.jsonl --html report.html --rules-out rules.md
 ```
 
 ---
@@ -304,14 +328,16 @@ waffen/
             normalize.py — GOFA-lite: probe which encodings the WAF's normalizer misses
   eval/     coverage.py — GoTestWAF-style coverage + false-positive scoring over a corpus
             corpus.py   — harvest payloads from a PayloadsAllTheThings-style tree
-            dataset.py  — labelled attack+benign training-set export
+            dataset.py  — labelled attack+benign training-set export (benign measured first)
   kb/       seeds.py    — built-in seed payloads per attack class (bootstrap)
+            inject_map.py — per-class injection routing for `--inject auto`
             update.py   — nuclei-style versioned KB auto-update (pluggable, no default source yet)
   report/   results.py  — console/JSONL findings summary
             html.py     — standalone styled HTML coverage report
             rules.py    — WAF-rule recommendation generator (finding/gap → actionable rule text)
-  cli.py                — `waffen bypass | eval | dataset | smuggle | fingerprint | kb-update |
-                          mutators | transforms | version`
+            analyze.py  — offline analysis of a collected log (coverage, FP, ban heuristic, HTML)
+  cli.py                — `waffen bypass | eval | dataset | analyze | smuggle | fingerprint |
+                          kb-update | mutators | transforms | version`
 ```
 
 ### Two orthogonal evasion axes

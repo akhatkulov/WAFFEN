@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 from .core import transforms as T
 from .core.oracle import Oracle, Target
+from .kb.inject_map import effective as _effective_target
 from .mutate import REGISTRY
 from .search.beam import SearchResult, beam_search
 from .search.genetic import genetic_search
@@ -87,7 +88,10 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                          n_recommended=len(getattr(norm_profile, "recommended_mutators", []) or []))
 
         for cls, payload in seeds:
-            oracle = Oracle(target, sender=sender, request_transform=rt, calibration=cal, delay=delay,
+            # --inject auto: route each class to its correct injection point
+            # (traversal->path, upload->multipart, ...) instead of forcing one.
+            eff = _effective_target(target, cls)
+            oracle = Oracle(eff, sender=sender, request_transform=rt, calibration=cal, delay=delay,
                             canary_payload=canary_payload, canary_every=canary_every)
             mutators = _mutators_for(cls, all_mutators)
             if norm_profile is not None and _reorder is not None:
@@ -97,8 +101,8 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
             # as a stop_on_first success, so the search does not halt on a dead bypass.
             verify_fn = None
             if do_verify and _verify is not None:
-                def verify_fn(p, _cls=cls, _rt=rt):  # fresh oracle so verify reqs stay separate
-                    return _verify(Oracle(target, sender=sender, request_transform=_rt), p, _cls)
+                def verify_fn(p, _cls=cls, _rt=rt, _eff=eff):  # fresh oracle so verify reqs stay separate
+                    return _verify(Oracle(_eff, sender=sender, request_transform=_rt), p, _cls)
 
             if strategy == "genetic":
                 res = genetic_search(

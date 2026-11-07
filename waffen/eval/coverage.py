@@ -117,7 +117,14 @@ def run_eval(target: Target, cases, *, benign=None, calibration=None, sender=Non
              on_event=None) -> EvalResult:
     """`cases` = iterable of (attack_class, payload). `benign` = iterable of strings."""
     res = EvalResult(target=target.base_url)
-    oracle = Oracle(target, sender=sender)
+    # The base oracle also serves benign traffic; "auto" is not a concrete inject
+    # mode, so resolve it to `query` here (benign is injected as a normal query value;
+    # per-class auto routing below only affects the attack payloads).
+    base_target = target
+    if getattr(target, "inject", None) == "auto":
+        import dataclasses as _dc
+        base_target = _dc.replace(target, inject="query")
+    oracle = Oracle(base_target, sender=sender)
 
     # Measure benign traffic FIRST, on a still-clean source: a long attack run can
     # get the test IP rate-limited/banned, after which benign requests would all look
@@ -140,7 +147,14 @@ def run_eval(target: Target, cases, *, benign=None, calibration=None, sender=Non
     for cls, payloads in by_cls.items():
         score = res.per_class.setdefault(cls, ClassScore())
         samples = res.through_samples.setdefault(cls, [])
-        responses = oracle.send_many(payloads, concurrency=concurrency, delay=delay)
+        # --inject auto: send each class at its correct injection point (traversal
+        # ->path, upload->multipart, ...). For a fixed inject this is a no-op and the
+        # single `oracle` above is reused.
+        cls_oracle = oracle
+        if getattr(target, "inject", None) == "auto":
+            from ..kb.inject_map import effective as _eff
+            cls_oracle = Oracle(_eff(target, cls), sender=sender)
+        responses = cls_oracle.send_many(payloads, concurrency=concurrency, delay=delay)
         for payload, resp in zip(payloads, responses):
             kind = _classify(resp, calibration)
             if kind == "block":

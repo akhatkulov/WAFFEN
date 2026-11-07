@@ -8,6 +8,7 @@ Subcommands:
   bypass       search for evasion chains against a target (or a mock WAF)
   eval         score WAF coverage + false-positive rate over a corpus
   dataset      build a labelled attack+benign training set
+  analyze      analyze a collected dataset/log JSONL offline (no network)
   smuggle      experimental timing-based HTTP request-smuggling probes
   fingerprint  identify the WAF in front of a target
   kb-update    check/apply a KB update from a configured source
@@ -381,6 +382,59 @@ def cmd_smuggle(args) -> int:
     return 0
 
 
+def cmd_analyze(args) -> int:
+    from pathlib import Path as _P
+    from .report import analyze as az
+    if not _P(args.log).exists():
+        print(f"[err] log file not found: {args.log}", file=sys.stderr)
+        return 2
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    records = az.load_log(args.log)
+    if not records:
+        print(ui.warn(f"no usable records in {args.log}"))
+        return 0
+    result = az.analyze(records)
+    ban = az.ban_heuristic(records)
+    print(ui.info("analyzed ") + ui.bold(f"{len(records)} records") + ui.gray(f"  from {args.log}"))
+    print(ui.rule())
+
+    o = result.overall
+    print(ui.rule("COVERAGE") + ui.gray("   █ blocked = WAF caught it · ░ gap = reached origin"))
+    for cls in sorted(result.per_class, key=lambda c: result.per_class[c].coverage):
+        s = result.per_class[cls]
+        print(f"  {ui.bar(s.coverage)} {s.coverage:5.1f}%  "
+              + ui.gray(f"B={s.blocked:5d} T={s.through:5d} U={s.unresolved:4d} D={s.down:4d}  ")
+              + ui.bold(cls))
+    print("  " + ui.gray("─" * 54))
+    print(f"  {ui.bar(o.coverage)} {ui.bold(f'{o.coverage:5.1f}%')}  "
+          + ui.gray(f"B={o.blocked} T={o.through} U={o.unresolved} D={o.down}  ") + ui.bold("OVERALL"))
+    if result.benign_total:
+        fp = f"false positives: {result.benign_blocked}/{result.benign_total} = {result.fp_rate:.1f}%"
+        print("\n" + (ui.ok(fp) if result.fp_rate <= 1 else ui.warn(fp)))
+    # ban-contamination heuristic
+    if getattr(ban, "suspected", False):
+        print("\n" + ui.warn("BAN CONTAMINATION SUSPECTED: " + getattr(ban, "reason", "")))
+    else:
+        print("\n" + ui.ok("no ban-contamination signal — " + getattr(ban, "reason", "looks clean")))
+
+    if args.html:
+        az.to_html(result, args.html, meta={"source": args.log, "records": len(records)})
+        print("\n" + ui.ok(f"HTML report: {args.html}"))
+    if args.rules or args.rules_out:
+        suggestions = rule_report.recommend_from_eval(result)
+        if suggestions:
+            if args.rules:
+                print("\n" + ui.rule("SUGGESTED WAF RULES"))
+                print(rule_report.render_text(suggestions))
+            if args.rules_out:
+                from pathlib import Path as _P2
+                _P2(args.rules_out).write_text(rule_report.render_markdown(suggestions))
+                print(ui.ok(f"rule recommendations written to {args.rules_out}"))
+    return 0
+
+
 def cmd_kb_update(args) -> int:
     from .kb.update import KBSource, check_and_update_all, default_sources, load_local_version
 
@@ -465,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--param", default="q", help="param/header/cookie name")
     b.add_argument("--method", default="GET")
     b.add_argument("--inject", default="query",
-                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload"])
+                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload", "auto"])
     b.add_argument("--strategy", default="beam", choices=["beam", "genetic", "bestfirst", "mcts"],
                    help="search strategy")
     b.add_argument("--branch", type=int, default=4, help="bestfirst: mutators tried per expansion")
@@ -511,7 +565,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--param", default="q")
     e.add_argument("--method", default="GET")
     e.add_argument("--inject", default="query",
-                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload"])
+                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload", "auto"])
     e.add_argument("--calibrate", action="store_true", help="learn block/pass signature first")
     e.add_argument("--concurrency", type=int, default=6)
     e.add_argument("--delay", type=float, default=0.0)
@@ -536,7 +590,7 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--param", default="q")
     d.add_argument("--method", default="GET")
     d.add_argument("--inject", default="query",
-                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload"])
+                   choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload", "auto"])
     d.add_argument("--calibrate", action="store_true", help="learn block/pass signature first")
     d.add_argument("--concurrency", type=int, default=6)
     d.add_argument("--delay", type=float, default=0.0)
@@ -557,6 +611,13 @@ def build_parser() -> argparse.ArgumentParser:
     fp = sub.add_parser("fingerprint", help="identify the WAF in front of a target")
     _add_target_args(fp)
     fp.set_defaults(func=cmd_fingerprint)
+
+    an = sub.add_parser("analyze", help="analyze a collected dataset/log JSONL offline (no network)")
+    an.add_argument("log", help="path to a .jsonl log written by `waffen dataset`")
+    an.add_argument("--html", default="", help="write a styled HTML coverage report here")
+    an.add_argument("--rules", action="store_true", help="print suggested WAF rules for coverage gaps")
+    an.add_argument("--rules-out", default="", help="write suggested WAF rules (Markdown) here")
+    an.set_defaults(func=cmd_analyze)
 
     kb = sub.add_parser("kb-update", help="check/apply a KB update from a configured source")
     kb.add_argument("--name", default="", help="source name (required with --kind)")
