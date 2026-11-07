@@ -205,3 +205,56 @@ def class_balance(records: list[dict]) -> dict:
     benign = counts.get("benign", 0)
     result["ratio_malicious_to_benign"] = (malicious / benign) if benign else None
     return result
+
+
+def balance_records(records: list[dict], *, max_ratio: float = 1.0, seed: int = 42) -> list[dict]:
+    """Downsample the malicious rows so malicious:benign <= `max_ratio`.
+
+    A raw full-corpus collection is wildly imbalanced (e.g. 27:1) and training on
+    it teaches a model to just predict "malicious". This trims the malicious side
+    down to `max_ratio` x the benign count, **stratified by attack_class** so the
+    cut is proportional and no class is wiped out (each class present keeps at
+    least one row while budget allows). Benign rows are always kept in full.
+    Deterministic given `seed`. If there are already few enough malicious rows (or
+    no benign rows to anchor the ratio), the input is returned unchanged.
+    """
+    import random
+    benign = [r for r in records if r.get("label") == "benign"]
+    malicious = [r for r in records if r.get("label") == "malicious"]
+    other = [r for r in records if r.get("label") not in ("benign", "malicious")]
+    if not benign:
+        return list(records)  # nothing to anchor a ratio to
+    target = int(len(benign) * max_ratio)
+    if len(malicious) <= target:
+        return list(records)  # already balanced enough
+
+    rng = random.Random(seed)
+    by_cls: dict[str, list] = {}
+    for r in malicious:
+        by_cls.setdefault(r.get("attack_class", "unknown"), []).append(r)
+
+    # proportional per-class quota, floored at 1 per non-empty class, then trimmed
+    # back to exactly `target` by shaving the largest buckets first.
+    quota = {c: max(1, round(target * len(rows) / len(malicious))) for c, rows in by_cls.items()}
+    quota = {c: min(q, len(by_cls[c])) for c, q in quota.items()}
+    # reconcile the rounded total to exactly `target`
+    while sum(quota.values()) > target:
+        c = max(quota, key=lambda k: quota[k])
+        if quota[c] <= 1:
+            break
+        quota[c] -= 1
+    while sum(quota.values()) < target:
+        c = max(by_cls, key=lambda k: len(by_cls[k]) - quota[k])
+        if quota[c] >= len(by_cls[c]):
+            break
+        quota[c] += 1
+
+    kept_mal = []
+    for c, rows in by_cls.items():
+        picks = rows[:]  # copy
+        rng.shuffle(picks)
+        kept_mal.extend(picks[:quota[c]])
+
+    out = benign + kept_mal + other
+    rng.shuffle(out)
+    return out

@@ -422,6 +422,22 @@ def cmd_analyze(args) -> int:
     if args.html:
         az.to_html(result, args.html, meta={"source": args.log, "records": len(records)})
         print("\n" + ui.ok(f"HTML report: {args.html}"))
+    if args.balanced_out:
+        from .eval.dataset import balance_records, stratified_split, write_jsonl, write_csv, class_balance
+        balanced = balance_records(records, max_ratio=args.balance)
+        bal = class_balance(balanced)
+        print("\n" + ui.info("balanced ") + ui.bold(f"{len(balanced)} rows")
+              + ui.gray(f"  (malicious={bal.get('malicious',0)} benign={bal.get('benign',0)}, "
+                        f"max_ratio={args.balance})"))
+        base = args.balanced_out
+        if args.split > 0:
+            train, val = stratified_split(balanced, args.split)
+            write_jsonl(train, f"{base}_train.jsonl"); write_jsonl(val, f"{base}_val.jsonl")
+            write_csv(train, f"{base}_train.csv"); write_csv(val, f"{base}_val.csv")
+            print(ui.ok(f"wrote {base}_train.(jsonl|csv) n={len(train)} · {base}_val.(jsonl|csv) n={len(val)}"))
+        else:
+            write_jsonl(balanced, f"{base}.jsonl"); write_csv(balanced, f"{base}.csv")
+            print(ui.ok(f"wrote {base}.jsonl and {base}.csv (n={len(balanced)})"))
     if args.rules or args.rules_out:
         suggestions = rule_report.recommend_from_eval(result)
         if suggestions:
@@ -617,6 +633,12 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("--html", default="", help="write a styled HTML coverage report here")
     an.add_argument("--rules", action="store_true", help="print suggested WAF rules for coverage gaps")
     an.add_argument("--rules-out", default="", help="write suggested WAF rules (Markdown) here")
+    an.add_argument("--balanced-out", default="",
+                    help="write a class-balanced training set derived from this log (prefix)")
+    an.add_argument("--balance", type=float, default=1.0,
+                    help="max malicious:benign ratio for --balanced-out (default 1.0)")
+    an.add_argument("--split", type=float, default=0.0,
+                    help="val fraction for a stratified train/val split of --balanced-out")
     an.set_defaults(func=cmd_analyze)
 
     kb = sub.add_parser("kb-update", help="check/apply a KB update from a configured source")
