@@ -3,6 +3,79 @@
 All notable changes to WAFFEN are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [Unreleased]
+
+## [0.2.0] — 2026-11-10
+
+Validated across **five WAFs and three detection models** (RedEye, OWASP CRS, BunkerWeb,
+NAXSI, open-appsec), plus the features and fixes that cross-WAF validation surfaced.
+
+### Added
+- **Weak sides strengthened** (the honest gaps in `docs/COMPARISON.md`, each verified
+  against real sources):
+  - WAF **fingerprint signatures 48 → 119** — the +71 ported straight from wafw00f's plugin
+    set (verified by cloning the repo; generic phrases dropped to avoid false matches).
+  - **SQLi verifier now extracts a DB-evaluated value** (arithmetic/version marker via
+    EXTRACTVALUE/CAST/CONVERT/`||` per MySQL/MariaDB/PostgreSQL/MSSQL/SQLite/Oracle, grounded
+    in PayloadsAllTheThings) — "confirmed injectable" becomes "confirmed, here's the proof value".
+  - **Stronger corpus harvester** (`eval/corpus.py`): broader PayloadsAllTheThings dir→class
+    mapping + robust extraction; fixed a latent bug that dropped fence-lookalike wordlist lines.
+  - **Validated on 5 WAFs across 3 detection models** — RedEye + OWASP CRS + BunkerWeb
+    (regex/CRS), **NAXSI** (`lab/naxsi-compose.yml`, whitelist/scoring, 73.5% / 0% FP), and
+    **open-appsec** (`lab/openappsec/`, machine-learning, ~35–55% / 0% FP) — each with a
+    visibly different coverage profile.
+- **Much wider coverage** (gaps from `docs/COMPARISON.md`, closed via an independently
+  verified multi-agent pass):
+  - WAF **fingerprint signatures 9 → 48** vendors (Barracuda, FortiWeb, Citrix NetScaler,
+    Palo Alto, Radware, Wallarm, DataDome, PerimeterX, IBM DataPower, Azure App Gateway /
+    Front Door, Aliyun, …) — grounded in wafw00f-known signatures; no false match on the lab.
+  - **KB seeds 47 → 181** across **14 classes** (added CRLF, XXE, SSRF, Open Redirect, LDAP, SSI).
+  - **Verifiers 9 → 14 classes** (+Open Redirect, SSI, LDAP, XXE, SSRF) and **deeper SQLi
+    confirmation** (UNION column-count + time-based blind, on top of error-signature/boolean).
+- **Pooled HTTP transport** (`--transport pooled`): a thread-local keep-alive
+  `http.client` connection reused across requests, instead of one curl subprocess
+  per request — ~1.6× faster on a localhost run (more on a remote HTTPS target,
+  where it also avoids a fresh TLS handshake per request). Covers every built-in
+  inject mode and transparently falls back to curl for `request_transform` sends
+  (transforms emit curl argv). Default stays `curl`; verified to produce identical
+  verdicts/status to curl across all inject modes against the CRS lab.
+- **Session / auth support** (`--header`/`-H`, `--cookie`): threaded through every
+  inject mode **and** every request transform via a single `oracle.apply_auth`, so a
+  bypass search can run behind a login. An auth cookie folds into a cookie-injection
+  payload's `Cookie:` header instead of colliding with it. (`bypass`, `eval`,
+  `dataset`, `fingerprint`.)
+- **Behavioral WAF fingerprinting**: when no vendor signature matches but a benign
+  probe reaches the origin while the attack probe is blocked, report a generic inline
+  WAF (low confidence) instead of a misleading "no WAF". Catches CRS/ModSecurity
+  behind nginx (generic `403`, no vendor header) — which previously fingerprinted as
+  nothing.
+- **Two new semantic verifiers**: NoSQL Injection (engine-error + boolean
+  differential) and Upload Insecure Files (app accept-vs-reject of a dangerous
+  extension). Verified-class coverage is now 9 classes.
+- **Second-WAF lab**: `lab/docker-compose.yml` + `lab/README.md` (OWASP CRS nginx +
+  Juice Shop) and the validation record in `docs/VALIDATION.md` §6 — 3 distinct
+  **verified** SQLi bypasses of CRS paranoia-level-1, confirmed by the live DB error.
+
+### Fixed
+- **Calibration false-positive artifact**: a low-confidence calibration (seen vs open-appsec's
+  ML model, confidence 0.4, overlapping size bands) classified benign as `unresolved → BLOCKED`,
+  inflating false-positives to 100%. Calibration now overrides the signature verdict only at
+  confidence ≥ 0.5 (shared `MIN_CALIBRATION_CONFIDENCE`), else falls back to the signature.
+- **Robustness (self-audit)**: concurrent batches now run a post-batch canary probe so
+  ban detection isn't blind above `--concurrency 1` (and `eval`/`dataset` warn); the
+  deep-SQLi UNION walk is bounded by `_UNION_MAX_COLS=6`; the pooled transport caps the
+  body read at 8 MiB and drops an oversized connection instead of draining it. The audit's
+  honest findings are documented in `docs/COMPARISON.md` ("Known limitations").
+- **Verifier false negatives**: verification probes now retry on a transient `DOWN`
+  (a flaky transport no longer reads as "exploit not confirmed"); the CRLF verifier's
+  own `curl -i` header path now carries `--header`/`--cookie` too.
+- **SQL verifier blind to Node ORMs**: added SQLite / Sequelize error signatures
+  (`SQLITE_ERROR`, `unrecognized token`, …) — Juice Shop's injection errors were
+  invisible to the old MySQL/Oracle/Postgres-only table.
+- **Duplicate rule suggestions**: `bypass --rules` now emits one rule per distinct
+  (class, payload); the same bypass rediscovered under several transforms no longer
+  prints N copies.
+
 ## [0.1.0] — 2026-11-07
 
 First tagged release. A closed-loop, verified WAF evasion-path finder for targets

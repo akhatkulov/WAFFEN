@@ -35,6 +35,12 @@ from .eval import corpus as eval_corpus
 from .report import rules as rule_report
 
 
+def _auth_kwargs(args):
+    """Session/auth Target kwargs shared by every subcommand (--header/--cookie)."""
+    return {"extra_headers": tuple(getattr(args, "header", None) or ()),
+            "cookie": getattr(args, "cookie", "")}
+
+
 def _gather_seeds(args):
     seeds = []
     if args.payload:
@@ -62,6 +68,7 @@ def cmd_bypass(args) -> int:
         base_url=args.target or "mock://local",
         path=args.path, param=args.param, method=args.method,
         inject=args.inject, block_signature=args.block_signature, timeout=args.timeout, tls_verify=args.tls_verify,
+        **_auth_kwargs(args),
     )
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
     transform_names = set(args.transforms.split(",")) if args.transforms else None
@@ -100,7 +107,8 @@ def cmd_bypass(args) -> int:
         max_requests=args.max_requests, stop_on_first=args.stop_on_first,
         do_calibrate=args.calibrate, do_learn=args.learn, concurrency=args.concurrency,
         canary_payload=args.canary or None, canary_every=args.canary_every,
-        do_verify=args.verify and not args.mock, sender=sender, on_event=ev,
+        do_verify=args.verify and not args.mock, sender=sender,
+        transport=args.transport, on_event=ev,
     )
     report.print_engine_summary(runs)
     if args.out:
@@ -108,8 +116,20 @@ def cmd_bypass(args) -> int:
         print(f"\n[*] findings written to {args.out}")
 
     if args.rules or args.rules_out:
-        suggestions = [rule_report.recommend_from_finding(f, endpoint=args.path)
-                      for run in runs for f in run.result.findings if f.verified]
+        # one rule per DISTINCT (class, payload): the same bypass is routinely
+        # rediscovered under several transforms/runs, and nine copies of one rule
+        # is noise for whoever has to act on it. Dedupe, keeping first occurrence.
+        seen: set = set()
+        suggestions = []
+        for run in runs:
+            for f in run.result.findings:
+                if not f.verified:
+                    continue
+                key = (run.attack_class, f.payload)
+                if key in seen:
+                    continue
+                seen.add(key)
+                suggestions.append(rule_report.recommend_from_finding(f, endpoint=args.path))
         if suggestions:
             if args.rules:
                 print("\n" + ui.rule("SUGGESTED WAF RULES"))
@@ -160,7 +180,7 @@ def cmd_eval(args) -> int:
 
     target = Target(base_url=args.target or "mock://local", path=args.path, param=args.param,
                     method=args.method, inject=args.inject, block_signature=args.block_signature,
-                    timeout=args.timeout, tls_verify=args.tls_verify)
+                    timeout=args.timeout, tls_verify=args.tls_verify, **_auth_kwargs(args))
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
 
     calibration = None
@@ -169,7 +189,7 @@ def cmd_eval(args) -> int:
             from .verify.calibrate import calibrate
             from .core.oracle import Oracle as _O
             from .kb.inject_map import resolve_base as _rb
-            calibration = calibrate(_O(_rb(target), sender=sender))
+            calibration = calibrate(_O(_rb(target), sender=sender, transport=args.transport))
             print(f"[*] calibrated: waf_detected={getattr(calibration,'waf_detected',None)} "
                   f"confidence={getattr(calibration,'confidence',None)}")
         except Exception as e:
@@ -184,8 +204,13 @@ def cmd_eval(args) -> int:
         f"inject={target.inject} {target.path}  concurrency={args.concurrency}"))
     print(ui.rule())
 
+    if args.concurrency > 1 and not args.mock:
+        print(ui.warn(f"concurrency={args.concurrency}: real-time ban detection is off (the canary "
+                      "runs only at --concurrency 1). Benign is measured first so FP stays valid, but "
+                      "a ban during the attack phase could inflate coverage — use --concurrency 1 for an "
+                      "unattended full-corpus run."))
     res = run_eval(target, cases, benign=benign, calibration=calibration, sender=sender,
-                   concurrency=args.concurrency, delay=args.delay)
+                   concurrency=args.concurrency, delay=args.delay, transport=args.transport)
 
     o = res.overall
     print("\n" + ui.rule("COVERAGE") + ui.gray("   █ blocked = WAF caught it · ░ gap = reached origin"))
@@ -236,7 +261,7 @@ def cmd_eval(args) -> int:
         from .core.transforms import find_inspection_cutoff
         print("\n" + ui.rule("BODY-INSPECTION CUTOFF") +
               ui.gray(f"  binary search, up to {args.cutoff_probes} probes"))
-        cutoff_oracle = _O(target, sender=sender, calibration=calibration)
+        cutoff_oracle = _O(target, sender=sender, calibration=calibration, transport=args.transport)
         cutoff = find_inspection_cutoff(cutoff_oracle, param="padding", probes=args.cutoff_probes)
         if cutoff is None:
             print(ui.gray("  no cutoff found within the probe budget (or the signature never got through)"))
@@ -275,7 +300,7 @@ def cmd_dataset(args) -> int:
 
     target = Target(base_url=args.target or "mock://local", path=args.path, param=args.param,
                     method=args.method, inject=args.inject, block_signature=args.block_signature,
-                    timeout=args.timeout, tls_verify=args.tls_verify)
+                    timeout=args.timeout, tls_verify=args.tls_verify, **_auth_kwargs(args))
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
     calibration = None
     if args.calibrate:
@@ -283,7 +308,7 @@ def cmd_dataset(args) -> int:
             from .verify.calibrate import calibrate
             from .core.oracle import Oracle as _O
             from .kb.inject_map import resolve_base as _rb
-            calibration = calibrate(_O(_rb(target), sender=sender))
+            calibration = calibrate(_O(_rb(target), sender=sender, transport=args.transport))
         except Exception as e:
             print(f"[warn] calibration failed: {e}", file=sys.stderr)
 
@@ -296,8 +321,11 @@ def cmd_dataset(args) -> int:
                       "class can't learn a boundary — add a benign set (from an UN-banned source)."))
     print(ui.rule())
 
+    if args.concurrency > 1 and not args.canary and not args.mock:
+        print(ui.warn(f"concurrency={args.concurrency} with no --canary: ban detection is off. "
+                      "Pass --canary <benign> (post-batch check at concurrency>1) or use --concurrency 1."))
     out = build_dataset(target, cases, benign=benign, calibration=calibration, sender=sender,
-                        concurrency=args.concurrency, delay=args.delay,
+                        concurrency=args.concurrency, delay=args.delay, transport=args.transport,
                         canary_payload=args.canary or None, canary_every=args.canary_every)
     records, stats = out["records"], out["stats"]
     bal = class_balance(records)
@@ -330,7 +358,7 @@ def cmd_fingerprint(args) -> int:
         print(f"[err] fingerprint module unavailable: {e}", file=sys.stderr)
         return 1
     target = Target(base_url=args.target, path=args.path, timeout=args.timeout, tls_verify=args.tls_verify,
-                    block_signature=args.block_signature)
+                    block_signature=args.block_signature, **_auth_kwargs(args))
     guesses = fingerprint(target)
     bn = ui.banner(__version__)
     if bn:
@@ -521,6 +549,15 @@ def _add_target_args(p):
     p.add_argument("--block-signature", default="Request blocked by RedEye")
     p.add_argument("--tls-verify", action="store_true",
                    help="enforce TLS certificate verification (default: off — for self-signed test targets)")
+    p.add_argument("--header", "-H", action="append", default=None, metavar="'Name: Value'",
+                   help="extra request header, e.g. 'Authorization: Bearer ...' (repeatable). "
+                        "Threads through every inject mode and transform — run a search behind auth")
+    p.add_argument("--cookie", default="", metavar="'a=1; b=2'",
+                   help="cookie string sent with every request (session auth)")
+    p.add_argument("--transport", default="curl", choices=["curl", "pooled"],
+                   help="request transport: 'curl' (default, uniform, required for request "
+                        "transforms) or 'pooled' (keep-alive http.client — faster on long runs; "
+                        "falls back to curl for transform sends)")
 
 
 def build_parser() -> argparse.ArgumentParser:

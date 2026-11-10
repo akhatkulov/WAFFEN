@@ -60,6 +60,9 @@ that every target-facing subcommand uses):
 | `--timeout N` | `15` | per-request curl timeout (seconds) |
 | `--block-signature TEXT` | `"Request blocked by RedEye"` | body substring marking a WAF block (swap for your own WAF's) |
 | `--tls-verify` | off | enforce TLS cert verification (default is insecure, like every comparable WAF tool, for self-signed test targets) |
+| `--header 'Name: Value'` / `-H` | — | extra request header (repeatable), e.g. `Authorization: Bearer …`; threads through every inject mode and transform so a search can run behind auth |
+| `--cookie 'a=1; b=2'` | — | cookie string sent with every request (session auth) |
+| `--transport MODE` | `curl` | `curl` (uniform; required for request transforms) or `pooled` (keep-alive `http.client`, faster on long runs; falls back to curl for transform sends) |
 | `--mock` | off | run against the built-in offline mock WAF instead of `--target` — no network, safe to experiment with |
 
 Every example below is runnable as shown. Replace `https://your-waf.example` with
@@ -373,10 +376,14 @@ WAF fingerprinting + test-plan hints, experimental smuggling probes, a WAF-rule
 recommendation generator, and a pluggable KB auto-update mechanism — all with
 test coverage (`pytest`).
 
+- **[`docs/COMPARISON.md`](docs/COMPARISON.md)** — honest, evidence-backed comparison
+  vs wafw00f / GoTestWAF / sqlmap: where WAFFEN is best-in-class (verified evasion-path
+  search) and where it is **not** (it doesn't replace sqlmap or a full scanner).
+- **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — real runs against **two independent
+  WAFs** (RedEye + a local OWASP CRS lab): the paranoia gradient (verified SQLi bypasses
+  137→8→0→0 vs false-positives 0→0→0→35%), a confirmed coverage gap, and the FP pitfalls
+  found and fixed.
 - **[`docs/ROADMAP.md`](docs/ROADMAP.md)** — full sprint history and what's still open.
-- **[`docs/VALIDATION.md`](docs/VALIDATION.md)** — honest results from real runs
-  against the team's own RedEye-protected target: a confirmed coverage gap,
-  false-positive pitfalls found and fixed, and head-to-head notes vs wafw00f/GoTestWAF.
 - **[`docs/COMPETITIVE_RESEARCH.md`](docs/COMPETITIVE_RESEARCH.md)** — the teardown
   of existing WAF tools this project's design choices are grounded in.
 

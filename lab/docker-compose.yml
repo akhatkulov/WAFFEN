@@ -1,0 +1,36 @@
+# WAFFEN second-WAF validation lab: OWASP CRS (ModSecurity) in front of Juice Shop.
+#
+# Gives a real, independent, industry-standard WAF to validate WAFFEN against,
+# locally and with no ban/auth friction. See docs/VALIDATION.md §6.
+#
+#   docker compose -p waffen-lab up -d
+#   waffen fingerprint --target http://localhost:18080 --path /rest/products/search
+#   waffen eval --target http://localhost:18080 --path /rest/products/search \
+#       --all-classes --calibrate --block-signature nginx --benign benign.txt
+#   waffen bypass --target http://localhost:18080 --path /rest/products/search \
+#       --class "SQL Injection" --calibrate --block-signature nginx --verify --rules
+#
+# Separate project name / ports from any production containers — does not touch them.
+services:
+  juiceshop:
+    image: bkimminich/juice-shop:latest
+    container_name: waffen-lab-juiceshop
+    expose: ["3000"]
+    restart: unless-stopped
+
+  crs:
+    image: owasp/modsecurity-crs:nginx
+    container_name: waffen-lab-crs
+    environment:
+      BACKEND: "http://juiceshop:3000"
+      PORT: "8080"
+      MODSEC_RULE_ENGINE: "On"
+      PARANOIA: "1"            # raise to 2–4 for a stricter test
+      BLOCKING_PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      ANOMALY_OUTBOUND: "4"
+      MODSEC_RESP_BODY_ACCESS: "On"
+    ports:
+      - "18080:8080"
+    depends_on: [juiceshop]
+    restart: unless-stopped

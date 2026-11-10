@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..core.oracle import Oracle, Target
+from ..core.oracle import Oracle, Target, MIN_CALIBRATION_CONFIDENCE
 
 
 # GoTestWAF-style split: API-security classes vs classic application-security classes.
@@ -103,7 +103,8 @@ class EvalResult:
 
 
 def _classify(resp, calibration):
-    if calibration is not None and getattr(calibration, "waf_detected", False):
+    if (calibration is not None and getattr(calibration, "waf_detected", False)
+            and getattr(calibration, "confidence", 0.0) >= MIN_CALIBRATION_CONFIDENCE):
         try:
             return calibration.classify(resp)  # block|pass|unresolved
         except Exception:
@@ -114,7 +115,7 @@ def _classify(resp, calibration):
 
 def run_eval(target: Target, cases, *, benign=None, calibration=None, sender=None,
              concurrency: int = 6, delay: float = 0.0, max_through_samples: int = 50,
-             on_event=None) -> EvalResult:
+             transport: str = "curl", on_event=None) -> EvalResult:
     """`cases` = iterable of (attack_class, payload). `benign` = iterable of strings."""
     res = EvalResult(target=target.base_url)
     # The base oracle also serves benign traffic; "auto" is not a concrete inject
@@ -124,7 +125,7 @@ def run_eval(target: Target, cases, *, benign=None, calibration=None, sender=Non
     if getattr(target, "inject", None) == "auto":
         import dataclasses as _dc
         base_target = _dc.replace(target, inject="query")
-    oracle = Oracle(base_target, sender=sender)
+    oracle = Oracle(base_target, sender=sender, transport=transport)
 
     # Measure benign traffic FIRST, on a still-clean source: a long attack run can
     # get the test IP rate-limited/banned, after which benign requests would all look
@@ -153,7 +154,7 @@ def run_eval(target: Target, cases, *, benign=None, calibration=None, sender=Non
         cls_oracle = oracle
         if getattr(target, "inject", None) == "auto":
             from ..kb.inject_map import effective as _eff
-            cls_oracle = Oracle(_eff(target, cls), sender=sender)
+            cls_oracle = Oracle(_eff(target, cls), sender=sender, transport=transport)
         responses = cls_oracle.send_many(payloads, concurrency=concurrency, delay=delay)
         for payload, resp in zip(payloads, responses):
             kind = _classify(resp, calibration)

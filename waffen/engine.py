@@ -61,7 +61,8 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                timing_threshold: float | None = None, do_calibrate: bool = False,
                do_learn: bool = False, concurrency: int = 1,
                canary_payload: str | None = None, canary_every: int = 25,
-               do_verify: bool = False, sender=None, on_event=None) -> list[BypassRun]:
+               do_verify: bool = False, sender=None, transport: str = "curl",
+               on_event=None) -> list[BypassRun]:
     """Run the full sweep. `seeds` is an iterable of (attack_class, payload)."""
     runs: list[BypassRun] = []
     transforms = T.select(set(transform_names) if transform_names else None)
@@ -76,7 +77,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
         cal = None
         tt = timing_threshold
         if do_calibrate and _calibrate is not None:
-            cal = _calibrate(Oracle(probe_target, sender=sender, request_transform=rt))
+            cal = _calibrate(Oracle(probe_target, sender=sender, request_transform=rt, transport=transport))
             if getattr(cal, "timing_reliable", False):
                 tt = getattr(cal, "timing_threshold", None)
             if on_event:
@@ -86,7 +87,8 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
 
         norm_profile = None
         if do_learn and _learn_norm is not None:
-            norm_profile = _learn_norm(Oracle(probe_target, sender=sender, request_transform=rt, calibration=cal))
+            norm_profile = _learn_norm(Oracle(probe_target, sender=sender, request_transform=rt,
+                                               calibration=cal, transport=transport))
             if on_event:
                 on_event("learned", transform=tr.name,
                          blind_to=getattr(norm_profile, "blind_to", None),
@@ -97,7 +99,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
             # (traversal->path, upload->multipart, ...) instead of forcing one.
             eff = _effective_target(target, cls)
             oracle = Oracle(eff, sender=sender, request_transform=rt, calibration=cal, delay=delay,
-                            canary_payload=canary_payload, canary_every=canary_every)
+                            canary_payload=canary_payload, canary_every=canary_every, transport=transport)
             mutators = _mutators_for(cls, all_mutators)
             if norm_profile is not None and _reorder is not None:
                 mutators = _reorder(mutators, norm_profile)
@@ -107,7 +109,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
             verify_fn = None
             if do_verify and _verify is not None:
                 def verify_fn(p, _cls=cls, _rt=rt, _eff=eff):  # fresh oracle so verify reqs stay separate
-                    return _verify(Oracle(_eff, sender=sender, request_transform=_rt), p, _cls)
+                    return _verify(Oracle(_eff, sender=sender, request_transform=_rt, transport=transport), p, _cls)
 
             if strategy == "genetic":
                 res = genetic_search(

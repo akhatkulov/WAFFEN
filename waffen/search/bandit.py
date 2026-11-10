@@ -91,5 +91,10 @@ def reward_from_score(score: float, parent_score: float) -> float:
     if score >= 1e8:
         return 1.0
     delta = score - parent_score
-    # logistic squash of the improvement
-    return 1.0 / (1.0 + math.exp(-delta))
+    # numerically-stable logistic squash: the naive 1/(1+exp(-delta)) raises
+    # OverflowError when delta is very negative (e.g. a small score after a THROUGH
+    # parent at score 1e9), so branch on the sign to keep exp()'s argument <= 0.
+    if delta >= 0:
+        return 1.0 / (1.0 + math.exp(-delta))
+    e = math.exp(delta)            # delta < 0 -> e in (0, 1), never overflows
+    return e / (1.0 + e)

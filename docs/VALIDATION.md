@@ -1,7 +1,10 @@
-# WAFFEN — Real-target validation (RedEye / juice-shop.redeyes.uz)
+# WAFFEN — Real-target validation (RedEye + OWASP CRS / ModSecurity)
 
-Honest record of live testing against the team's own RedEye-protected demo. All
-runs are against an authorized target the team owns.
+Honest record of live testing against two independent WAFs: the team's own
+RedEye-protected demo (§1–5, authorized target the team owns), and a local
+**OWASP Core Rule Set / ModSecurity** lab (§6) — the industry-standard
+open-source WAF — added to answer the earlier "validated on only one WAF"
+limitation. Every run is against a target the team owns or runs locally.
 
 ## 1. Fingerprint head-to-head — WAFFEN wins
 | Tool | Result |
@@ -85,7 +88,213 @@ WAFFEN (and GoTestWAF) self-ban on a full-corpus run — no built-in ban clearin
 Benign-first ordering fixes FP accuracy; full clean coverage still needs the test
 source un-banned (cleared via the RedEye panel) or batched with pauses.
 
+## 6. Second-WAF validation — OWASP CRS / ModSecurity (independent, industry-standard)
+The earlier passes only covered RedEye. To prove WAFFEN is not RedEye-specific, a
+**local second WAF** was stood up and the whole pipeline re-run against it.
+
+**Lab:** `owasp/modsecurity-crs:nginx` (CRS, paranoia level 1, anomaly-blocking)
+reverse-proxying a local `bkimminich/juice-shop` backend, on `localhost:18080`
+(`lab/docker-compose.yml`, `lab/README.md`). Same app, a different and much stricter WAF than
+RedEye. Block shape is nginx's generic `403 Forbidden` page — **no vendor header or
+body signature at all** (`Server: nginx` on both pass and block).
+
+### 6.1 Fingerprint — a real gap, found and fixed
+WAFFEN's signature table first reported **"no WAF"** against CRS — misleading, since
+attacks were plainly getting 403'd. CRS-behind-nginx exposes nothing to match. Fix:
+added a **behavioral fallback** — benign probe reaches origin (2xx) while the attack
+probe is blocked (403/406/…) ⇒ report a generic inline WAF at low confidence (the
+same generic-detection wafw00f falls back to). WAFFEN now reports
+`Generic/Unknown WAF (0.30)` with the differential as evidence, instead of "no WAF".
+
+### 6.2 Calibration + coverage — pipeline works unchanged
+- `--calibrate` against CRS: **waf_detected=True, confidence 0.80, block=HTTP 403**
+  learned automatically (RedEye's `"Request blocked by RedEye"` signature is
+  irrelevant here — calibration adapts with no code change).
+- `eval` (47 KB-seed attacks, 20 benign, `--inject query`): **overall coverage
+  42.6%**, **false positives 0/20 = 0.0%**. Per class CRS PL1 blocks XSS / Directory
+  Traversal / File Inclusion / SSTI at **100%**, SQL 75%, Command/NoSQL 50%. (The
+  Upload class reads ~4% here — a query-param artifact, same injection-point lesson
+  as §5a; not a real CRS gap.)
+
+### 6.3 Verified bypasses — WAFFEN beats CRS PL1 on the real SQLi endpoint
+Juice Shop's `/rest/products/search?q=` is a genuine SQLite-backed SQLi sink. Running
+the **verified** search (`bypass --verify`) found evasions that CRS PL1 lets through
+**and** that the verifier confirmed hit the database — **3 distinct payloads** (seen
+across the identity / hpp_duplicate / junk_prefix_param transforms, 9 findings before
+dedupe):
+
+| Mutation chain | Payload | Confirmed by |
+|---|---|---|
+| `whitespace_newline` | `'`⏎`OR`⏎`1=1-- -` | live `SQLITE_ERROR` in response |
+| `sql_string_concat_pipe` | `' O'\|\|'R '1'='1` | live `SQLITE_ERROR` in response |
+| *(identity)* | `admin'-- -` | live `SQLITE_ERROR` in response |
+
+CRS PL1's keyword regex misses the tautology once `OR` is split by a newline or a
+`'||'` string-concat; Juice Shop still parses it, erroring on the broken SQL — which
+is **error-based proof of injection**. This required a verifier fix the lab surfaced:
+the SQL error table had no SQLite/Sequelize signature (`SQLITE_ERROR`), so the Node
+app's errors were invisible — now added.
+
+**Honest scope:** these are **error-based** confirmations (HTTP 500 carrying a real DB
+error), not a completed `UNION`-exfil, and only against **paranoia level 1**; higher
+CRS paranoia blocks more. The headline is not "CRS is weak" — it is that WAFFEN's
+search + verifier **transfer cleanly to a second, independent, industry-standard WAF**
+and produce real, verified, deduplicated, rule-actionable findings there.
+
+### 6.4 Verifier honesty held on the second WAF too
+The same run's XSS search produced dozens of raw THROUGHs (mostly double-URL-encoded
+payloads that evade CRS but reach the app as inert text → HTTP 500). With `--verify`
+**none** were reported exploitable: a 500 with a *SQL error* is confirmed (6.3); a 500
+with *inert junk* is correctly rejected. The verifier distinguishes them by body
+content — the same no-false-bypass discipline §4 showed on RedEye, now cross-checked
+on CRS.
+
+### 6.5 Paranoia gradient — WAFFEN measures the security/usability tradeoff
+CRS was re-run at paranoia levels 1→4 (`lab/`, `PARANOIA=n`), re-calibrating each time.
+
+**Seed coverage + false-positives** (47 KB-seed attacks, 20 benign, `--inject query`):
+
+| CRS PL | Overall coverage | False-positive rate |
+|---|---|---|
+| 1 | 42.6% | **0%** |
+| 2 | 48.9% | **0%** |
+| 3 | 51.1% | **0%** |
+| 4 | 53.2% | **35%** (7/20 benign blocked) |
+
+(Overall % is dragged down by the Upload-class query-param artifact that sits at
+~4–8% at every level; every *real* value-injection class — XSS/SQL/Cmd/NoSQL/
+Traversal/LFI/SSTI — is already **100% blocked by PL3**.)
+
+**Verified SQLi bypasses the search engine still finds** (`bypass --verify`, all SQL
+seeds, DB-error-confirmed, on the real `/rest/products/search` sink):
+
+| CRS PL | Distinct VERIFIED SQLi bypasses |
+|---|---|
+| 1 | **137** |
+| 2 | **8** |
+| 3 | **0** |
+| 4 | **0** |
+
+This is the clearest single demonstration of why the mutation **search** beats static
+payload lists: at PL1 single-seed testing reads SQL as "75% blocked" (1 seed through),
+but the engine finds **137 distinct verified evasions** — backslash-escaped quotes,
+backtick-quoted `OR`, zero-width-character insertion (`O​R`), `OR`→`||`,
+intra-keyword comments (`O/**/R`), scientific-notation / NFKC-fold tricks, exotic
+whitespace. PL2 closes all but **8** (the nastiest: zero-width + `+`-encoded space).
+PL3 closes them **completely**, and WAFFEN honestly reports 0 — it does not fabricate.
+
+**Actionable conclusion for a defender:** on this surface **PL3 is the sweet spot** —
+it eliminates every SQLi evasion the engine could find (0 bypasses) at **0% false
+positives**, whereas **PL4 buys no extra SQLi protection here yet costs 35% of benign
+traffic**. WAFFEN produced that recommendation by measurement, not assumption.
+
+### 6.6 Beyond the query string — JSON-body injection and live session auth
+- **JSON-body injection** (`--inject json`, `POST /rest/user/login`, field `email`): CRS PL1
+  blocks the raw `' OR 1=1--` login payload (403). The search found CRS-evading mutations
+  that still reach the database — **3 distinct verified** (error-based) login-SQLi payloads
+  (`whitespace_newline`, `zero_width_insert`, `sql_string_concat_pipe`), while 1164
+  non-injecting THROUGHs (401 evasions that evade CRS but do not log in) were correctly left
+  **unverified**. Confirms WAFFEN works at a body/JSON injection point, not only the query string.
+- **Live session auth** (`--header`): against a real protected endpoint (`GET /rest/basket/1`,
+  which is `401` with no token), threading `--header "Authorization: Bearer <jwt>"` through
+  WAFFEN's oracle flips the response to `200` — and does so through a request transform's
+  curl-argv path too, not only the default path. The single-source `apply_auth` design is
+  confirmed live, end-to-end (previously only unit-tested).
+
+### 6.7 Transport parity — pooled vs curl agree
+The new `--transport pooled` (keep-alive `http.client`) was cross-checked against the
+default curl transport on the lab: across every inject mode (query / rawpath / json /
+body) and both benign and attack payloads, the two transports returned the **same status
+and the same verdict** (8/8). A pooled bypass run found the same 3 verified SQLi payloads,
+and a pooled run with a curl-argv transform fell back to curl cleanly. Pooled was ~1.6×
+faster on localhost (≈6.1 vs 10.1 ms/request) — a bigger gap is expected on a remote
+HTTPS target, where keep-alive also removes a per-request TLS handshake.
+
+### 6.8 Third WAF + strengthened coverage
+Closing the documented weak sides (see `docs/COMPARISON.md`):
+- **A 3rd independent WAF — BunkerWeb** (`lab/bunkerweb-compose.yml`, a distinct product,
+  not CRS alone), in front of the same Juice Shop. WAFFEN flags it behaviorally
+  (`Generic/Unknown WAF`, no false vendor match from the 119-signature table), auto-calibrates
+  (`waf_detected=True`, conf 0.90), and scores **71.6% coverage at 0% false-positives**. WAFFEN
+  is now validated on **RedEye + OWASP CRS + BunkerWeb**.
+- **Fingerprint 48 → 119 vendors** (the +71 ported from wafw00f's plugin source, cross-checked;
+  all regexes compile, 0 duplicates) — and still no false match on the CRS/BunkerWeb labs.
+- **SQLi verifier extracts a DB-evaluated proof value** as a high-confidence fall-through; on the
+  error-leaking Juice Shop endpoint the error-signature channel confirms first (0.80), and the
+  extraction channel (0.95) is exercised by unit tests for error-suppressed targets.
+
+### 6.9 A 4th WAF, and a genuinely different detection model — NAXSI
+The audit noted all WAFs so far were regex/CRS-family. **NAXSI** (`lab/naxsi-compose.yml` +
+`lab/naxsi-nginx.conf`, enforcing mode) is a **whitelist/scoring** WAF — a different model —
+in front of the same Juice Shop on `:18082`. WAFFEN flags it behaviorally (`Generic/Unknown`,
+0.30 — the custom deny page carries no NAXSI header), auto-calibrates (`waf_detected=True`,
+0.80), and scores **73.5% coverage at 0% false-positives**. Crucially the **per-class profile
+differs from CRS** — SSTI 50% (vs CRS 83–100%), Open Redirect 57%, CRLF 62.5%, while SQL/XSS/
+Traversal stay 100% — evidence WAFFEN captures model-specific behavior, not just one WAF's shape.
+WAFFEN is now validated on **RedEye + CRS + BunkerWeb + NAXSI** (4 WAFs, 2 detection models).
+
+### 6.10 All 14 verifiers live-validated (self-audit follow-up)
+The self-audit flagged that 5 verifiers (XXE, SSRF, LDAP, SSI, Open Redirect) were unit-tested
+only — Juice Shop hardens or lacks those sinks. A purpose-built vulnerable sink app
+(`lab/vuln_sinks.py`, stdlib only) now gives each verifier a real socket crafted to match its
+probe, and the REAL verifier (real curl / `_fetch_headers`) confirms all five end-to-end:
+
+| Class | Live confidence | Confirmed by |
+|---|---|---|
+| Open Redirect | 0.90 | `Location:` authority = attacker host |
+| SSI | 0.90 | `$((a*b))` evaluated server-side |
+| XXE | 0.75 | internal entity expanded to a split-marker |
+| LDAP | 0.70 | `InvalidSearchFilter` / `[LDAP: error code]` |
+| SSRF | 0.60 | cloud-metadata `AccessKeyId` in the body |
+
+`tests/test_verifier_live_sinks.py` makes this permanent (binds the sink, runs the verifier,
+plus a no-false-positive check). All 14 verifier classes are now exercised against a live target.
+
+### 6.11 Search strategies benchmarked (and a crash found)
+The audit noted the 4 strategies were never compared. Running each on the CRS lab (SQL class,
+20 seeds, equal 150-request/run budget, `lab/strategy_bench.py`) gives real numbers:
+
+| Strategy | Distinct bypasses | Requests | Time | Bypasses / 1k req |
+|---|---|---|---|---|
+| beam (default) | 847 | 2851 | 21.3s | 297 |
+| **genetic** | 1015 | 1747 | 14.7s | **581** |
+| best-first | 233 | 461 | 3.9s | 505 |
+| MCTS | 1021 | 2851 | 23.0s | 358 |
+
+**genetic** is the most efficient (most bypasses per request, fewest requests, fastest) and nearly
+the most thorough; **MCTS** finds the most but costs the most; **best-first** converges fast but
+explores least. They genuinely differ — the default (beam) is reasonable, but genetic is the better
+pick under a tight budget. The benchmark also surfaced a real crash — `reward_from_score` raised
+`OverflowError` for a large negative score delta (a small score after a THROUGH parent) — now fixed
+with a numerically-stable sigmoid (`tests/test_bandit.py`).
+
+### 6.12 A 5th WAF and a 3rd detection model — open-appsec (ML), + a calibration bug fixed
+To validate beyond regex (CRS) and whitelist (NAXSI) models, **open-appsec** — a
+machine-learning WAF — was stood up (`lab/openappsec/`, prevent-learn, confidence medium) in
+front of Juice Shop on `:18083`. WAFFEN flags it behaviorally, calibrates, and scores **~35%
+(signature) / ~55% (calibrated) coverage at 0% false-positives** — a much more permissive profile
+than CRS/NAXSI (the open-source ML model lets more through). WAFFEN now spans **5 WAFs across 3
+detection models** (regex / whitelist / ML).
+
+This run also surfaced a **real WAFFEN bug**: open-appsec sometimes calibrated at low confidence
+(0.4) with overlapping block/benign size bands, so the learned model classified *benign* responses
+as `unresolved → BLOCKED` — a **100% false-positive artifact**. Direct probing proved open-appsec
+was *not* over-blocking (every benign term returned 200), confirming it was WAFFEN's calibration,
+not the WAF. Fixed: calibration now only overrides the signature verdict when confidence ≥ 0.5
+(`MIN_CALIBRATION_CONFIDENCE`), else it falls back to the signature — applied in the oracle and both
+eval/dataset classifiers (`tests/test_calibration_gate.py`). High-confidence WAFs are unaffected.
+
 ## Verdict
+- **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
+  ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
+  transfers to CRS with no code change beyond two real gaps the lab surfaced and fixed
+  (behavioral fingerprint fallback; SQLite error signature).
+- **Proven on CRS:** 3 distinct **verified** SQLi bypasses of CRS PL1 on a real SQLi
+  endpoint, confirmed by the live database error (not inflated 500 noise).
+- **Proven — the search beats static payload lists, and quantifies a config tradeoff:**
+  across paranoia 1→4, verified SQLi bypasses the engine finds go **137 → 8 → 0 → 0**
+  while false-positives go **0% → 0% → 0% → 35%** — so WAFFEN recommends **PL3** (all
+  SQLi evasions closed, no benign over-blocking) by measurement (§6.5).
 - **Proven stronger / more trustworthy than the de-facto tools on this target:**
   names the WAF (vs wafw00f), avoids GoTestWAF's self-ban FP artifact, and never
   reports an unverified bypass as real.
