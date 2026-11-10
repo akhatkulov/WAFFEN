@@ -149,6 +149,45 @@ with *inert junk* is correctly rejected. The verifier distinguishes them by body
 content — the same no-false-bypass discipline §4 showed on RedEye, now cross-checked
 on CRS.
 
+### 6.5 Paranoia gradient — WAFFEN measures the security/usability tradeoff
+CRS was re-run at paranoia levels 1→4 (`lab/`, `PARANOIA=n`), re-calibrating each time.
+
+**Seed coverage + false-positives** (47 KB-seed attacks, 20 benign, `--inject query`):
+
+| CRS PL | Overall coverage | False-positive rate |
+|---|---|---|
+| 1 | 42.6% | **0%** |
+| 2 | 48.9% | **0%** |
+| 3 | 51.1% | **0%** |
+| 4 | 53.2% | **35%** (7/20 benign blocked) |
+
+(Overall % is dragged down by the Upload-class query-param artifact that sits at
+~4–8% at every level; every *real* value-injection class — XSS/SQL/Cmd/NoSQL/
+Traversal/LFI/SSTI — is already **100% blocked by PL3**.)
+
+**Verified SQLi bypasses the search engine still finds** (`bypass --verify`, all SQL
+seeds, DB-error-confirmed, on the real `/rest/products/search` sink):
+
+| CRS PL | Distinct VERIFIED SQLi bypasses |
+|---|---|
+| 1 | **137** |
+| 2 | **8** |
+| 3 | **0** |
+| 4 | **0** |
+
+This is the clearest single demonstration of why the mutation **search** beats static
+payload lists: at PL1 single-seed testing reads SQL as "75% blocked" (1 seed through),
+but the engine finds **137 distinct verified evasions** — backslash-escaped quotes,
+backtick-quoted `OR`, zero-width-character insertion (`O​R`), `OR`→`||`,
+intra-keyword comments (`O/**/R`), scientific-notation / NFKC-fold tricks, exotic
+whitespace. PL2 closes all but **8** (the nastiest: zero-width + `+`-encoded space).
+PL3 closes them **completely**, and WAFFEN honestly reports 0 — it does not fabricate.
+
+**Actionable conclusion for a defender:** on this surface **PL3 is the sweet spot** —
+it eliminates every SQLi evasion the engine could find (0 bypasses) at **0% false
+positives**, whereas **PL4 buys no extra SQLi protection here yet costs 35% of benign
+traffic**. WAFFEN produced that recommendation by measurement, not assumption.
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
@@ -156,6 +195,10 @@ on CRS.
   (behavioral fingerprint fallback; SQLite error signature).
 - **Proven on CRS:** 3 distinct **verified** SQLi bypasses of CRS PL1 on a real SQLi
   endpoint, confirmed by the live database error (not inflated 500 noise).
+- **Proven — the search beats static payload lists, and quantifies a config tradeoff:**
+  across paranoia 1→4, verified SQLi bypasses the engine finds go **137 → 8 → 0 → 0**
+  while false-positives go **0% → 0% → 0% → 35%** — so WAFFEN recommends **PL3** (all
+  SQLi evasions closed, no benign over-blocking) by measurement (§6.5).
 - **Proven stronger / more trustworthy than the de-facto tools on this target:**
   names the WAF (vs wafw00f), avoids GoTestWAF's self-ban FP artifact, and never
   reports an unverified bypass as real.
