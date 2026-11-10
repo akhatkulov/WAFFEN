@@ -107,8 +107,10 @@ numbers above aren't over-read:
   CRS, **genetic** is the most efficient (581 bypasses / 1k requests, fastest) and **MCTS** the
   most thorough (1021 found); the benchmark also surfaced and fixed an `OverflowError` crash in
   best-first's bandit reward. Beam remains a solid default; pick genetic for budget-limited runs.
-- **The self-updating KB ships no sources** (`kb-update`): the mechanism is real but there is no
-  public WAFFEN KB yet, so auto-update is roadmap, not a working feature today.
+- **The self-updating KB now has a consumer, but no public source yet.** `kb-update` downloads a
+  bundle and `seeds.py` now merges per-class seed files from it at load (`$WAFFEN_KB_DIR`), so the
+  download→consume loop is end-to-end (tested) — but there is no public WAFFEN community KB to point
+  it at, so it only extends seeds from a source you host yourself. Still roadmap as a *shared* KB.
 - **Ban detection is real-time only at `--concurrency 1`.** Above that it is a single post-batch
   probe (added after the audit); unattended full-corpus runs should still prefer `--concurrency 1`.
 
