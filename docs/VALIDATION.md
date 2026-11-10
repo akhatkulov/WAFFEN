@@ -223,6 +223,23 @@ Closing the documented weak sides (see `docs/COMPARISON.md`):
   error-leaking Juice Shop endpoint the error-signature channel confirms first (0.80), and the
   extraction channel (0.95) is exercised by unit tests for error-suppressed targets.
 
+### 6.9 All 14 verifiers live-validated (self-audit follow-up)
+The self-audit flagged that 5 verifiers (XXE, SSRF, LDAP, SSI, Open Redirect) were unit-tested
+only — Juice Shop hardens or lacks those sinks. A purpose-built vulnerable sink app
+(`lab/vuln_sinks.py`, stdlib only) now gives each verifier a real socket crafted to match its
+probe, and the REAL verifier (real curl / `_fetch_headers`) confirms all five end-to-end:
+
+| Class | Live confidence | Confirmed by |
+|---|---|---|
+| Open Redirect | 0.90 | `Location:` authority = attacker host |
+| SSI | 0.90 | `$((a*b))` evaluated server-side |
+| XXE | 0.75 | internal entity expanded to a split-marker |
+| LDAP | 0.70 | `InvalidSearchFilter` / `[LDAP: error code]` |
+| SSRF | 0.60 | cloud-metadata `AccessKeyId` in the body |
+
+`tests/test_verifier_live_sinks.py` makes this permanent (binds the sink, runs the verifier,
+plus a no-false-positive check). All 14 verifier classes are now exercised against a live target.
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline

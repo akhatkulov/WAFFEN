@@ -90,11 +90,12 @@ ModSecurity** lab, and **BunkerWeb** (a distinct WAF product) ([`lab/`](../lab))
 Beyond the head-to-head gaps above, a critical self-audit found these — stated plainly so the
 numbers above aren't over-read:
 
-- **5 of the 14 verifier classes are unit-tested only.** XXE, SSRF, LDAP, SSI and Open Redirect
-  verifiers are validated against *fake oracles*, never a live vulnerable sink — the lab's Juice
-  Shop hardens (e.g. `/redirect` → 406) or lacks those sinks. Treat their verdicts as sound
-  *heuristics* pending field testing; the 9 original classes (XSS/SQL/Cmd/Traversal/LFI/SSTI/
-  CRLF/NoSQL/Upload) are exercised end-to-end.
+- **All 14 verifier classes are now live-validated.** The 5 newer ones (XXE, SSRF, LDAP, SSI,
+  Open Redirect) were initially unit-only — Juice Shop hardens (`/redirect` → 406) or lacks those
+  sinks — so a purpose-built vulnerable sink app (`lab/vuln_sinks.py`) now exercises each end-to-end
+  through the real verifier (real curl), confirming all five (0.60–0.90 confidence) with a
+  no-false-positive check (`tests/test_verifier_live_sinks.py`). The confidence ceilings stay
+  honest: SSRF caps at 0.60 (in-band only), XXE at 0.75 (proves parsing, not file read).
 - **The 119 fingerprints are a wafw00f port tested on synthetic responses** — not yet matched
   against live traffic from each vendor, so a real deployment could differ in header casing/order.
 - **The SQLi data-extraction channel (0.95) isn't live-proven** — on the error-leaking Juice Shop
