@@ -177,7 +177,8 @@ def test_unknown_class_has_no_verifier():
     def sender(p):
         return Response("THROUGH", "200", 10, 0.01, "ok")
 
-    v = verify(_oracle(sender), "whatever", "NoSQL Injection")
+    # a class with no registered checker (XXE has seeds elsewhere but no verifier yet)
+    v = verify(_oracle(sender), "whatever", "XML External Entity")
     assert v.exploitable is False
     assert v.confidence == 0.0
     assert "no verifier" in v.reason.lower()
@@ -223,6 +224,33 @@ def test_fingerprint_header_based_cloudflare_detection():
     t = Target(base_url="mock://local")
     guesses = fingerprint(t, sender=sender)
     assert guesses and guesses[0].name == "Cloudflare"
+
+
+def test_fingerprint_generic_behavioral_differential():
+    # No vendor signature (e.g. OWASP CRS behind nginx: generic 403, Server: nginx),
+    # but the benign probe passes and the attack probe is blocked -> report a generic
+    # inline WAF instead of a misleading empty "no WAF" result.
+    def sender(p):
+        if "OR 1=1" in p or "script" in p:           # the malicious probe
+            return Response("BLOCKED", "403", 146, 0.01,
+                            "<html><title>403 Forbidden</title><center>nginx</center></html>")
+        return Response("THROUGH", "200", 500, 0.01, "<html>home page</html>")
+
+    t = Target(base_url="mock://local")
+    guesses = fingerprint(t, sender=sender)
+    assert guesses and guesses[0].name == "Generic/Unknown WAF"
+    assert guesses[0].confidence == 0.3
+
+
+def test_fingerprint_app_error_on_attack_is_not_a_waf():
+    # a 500 on the attack probe is an origin error, not a block -> no WAF fabricated
+    def sender(p):
+        if "OR 1=1" in p or "script" in p:
+            return Response("THROUGH", "500", 100, 0.01, "Internal Server Error")
+        return Response("THROUGH", "200", 500, 0.01, "home")
+
+    t = Target(base_url="mock://local")
+    assert fingerprint(t, sender=sender) == []
 
 
 if __name__ == "__main__":

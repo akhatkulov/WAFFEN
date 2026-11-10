@@ -35,6 +35,12 @@ from .eval import corpus as eval_corpus
 from .report import rules as rule_report
 
 
+def _auth_kwargs(args):
+    """Session/auth Target kwargs shared by every subcommand (--header/--cookie)."""
+    return {"extra_headers": tuple(getattr(args, "header", None) or ()),
+            "cookie": getattr(args, "cookie", "")}
+
+
 def _gather_seeds(args):
     seeds = []
     if args.payload:
@@ -62,6 +68,7 @@ def cmd_bypass(args) -> int:
         base_url=args.target or "mock://local",
         path=args.path, param=args.param, method=args.method,
         inject=args.inject, block_signature=args.block_signature, timeout=args.timeout, tls_verify=args.tls_verify,
+        **_auth_kwargs(args),
     )
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
     transform_names = set(args.transforms.split(",")) if args.transforms else None
@@ -108,8 +115,20 @@ def cmd_bypass(args) -> int:
         print(f"\n[*] findings written to {args.out}")
 
     if args.rules or args.rules_out:
-        suggestions = [rule_report.recommend_from_finding(f, endpoint=args.path)
-                      for run in runs for f in run.result.findings if f.verified]
+        # one rule per DISTINCT (class, payload): the same bypass is routinely
+        # rediscovered under several transforms/runs, and nine copies of one rule
+        # is noise for whoever has to act on it. Dedupe, keeping first occurrence.
+        seen: set = set()
+        suggestions = []
+        for run in runs:
+            for f in run.result.findings:
+                if not f.verified:
+                    continue
+                key = (run.attack_class, f.payload)
+                if key in seen:
+                    continue
+                seen.add(key)
+                suggestions.append(rule_report.recommend_from_finding(f, endpoint=args.path))
         if suggestions:
             if args.rules:
                 print("\n" + ui.rule("SUGGESTED WAF RULES"))
@@ -160,7 +179,7 @@ def cmd_eval(args) -> int:
 
     target = Target(base_url=args.target or "mock://local", path=args.path, param=args.param,
                     method=args.method, inject=args.inject, block_signature=args.block_signature,
-                    timeout=args.timeout, tls_verify=args.tls_verify)
+                    timeout=args.timeout, tls_verify=args.tls_verify, **_auth_kwargs(args))
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
 
     calibration = None
@@ -275,7 +294,7 @@ def cmd_dataset(args) -> int:
 
     target = Target(base_url=args.target or "mock://local", path=args.path, param=args.param,
                     method=args.method, inject=args.inject, block_signature=args.block_signature,
-                    timeout=args.timeout, tls_verify=args.tls_verify)
+                    timeout=args.timeout, tls_verify=args.tls_verify, **_auth_kwargs(args))
     sender = make_mock_sender(block_signature=args.block_signature) if args.mock else None
     calibration = None
     if args.calibrate:
@@ -330,7 +349,7 @@ def cmd_fingerprint(args) -> int:
         print(f"[err] fingerprint module unavailable: {e}", file=sys.stderr)
         return 1
     target = Target(base_url=args.target, path=args.path, timeout=args.timeout, tls_verify=args.tls_verify,
-                    block_signature=args.block_signature)
+                    block_signature=args.block_signature, **_auth_kwargs(args))
     guesses = fingerprint(target)
     bn = ui.banner(__version__)
     if bn:
@@ -521,6 +540,11 @@ def _add_target_args(p):
     p.add_argument("--block-signature", default="Request blocked by RedEye")
     p.add_argument("--tls-verify", action="store_true",
                    help="enforce TLS certificate verification (default: off — for self-signed test targets)")
+    p.add_argument("--header", "-H", action="append", default=None, metavar="'Name: Value'",
+                   help="extra request header, e.g. 'Authorization: Bearer ...' (repeatable). "
+                        "Threads through every inject mode and transform — run a search behind auth")
+    p.add_argument("--cookie", default="", metavar="'a=1; b=2'",
+                   help="cookie string sent with every request (session auth)")
 
 
 def build_parser() -> argparse.ArgumentParser:

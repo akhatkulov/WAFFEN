@@ -165,6 +165,43 @@ def _curl_sender(target):
 _BENIGN_PROBE = "waffen-recon-probe"
 _MALICIOUS_PROBE = "' OR 1=1-- <script>alert(1)</script> ../../../../etc/passwd"
 
+# Status codes a WAF typically returns when it BLOCKS (as opposed to the origin
+# erroring). Used for the behavioral fallback below.
+_BLOCK_CODES = {"403", "406", "501", "419", "429", "503", "999"}
+
+
+def _behavioral_waf_guess(responses) -> "WafGuess | None":
+    """Vendor-agnostic 'is a WAF inline?' fallback via a benign/malicious differential.
+
+    Many of the most common deployments expose NO vendor signature at all — e.g.
+    OWASP CRS / ModSecurity behind nginx just returns nginx's generic 403 page with
+    `Server: nginx` and no distinguishing header or body text. A signature-only
+    fingerprinter then reports 'no WAF', which is actively misleading: the attack
+    probe plainly got blocked while the benign one passed. When the benign probe
+    reaches the origin (2xx/3xx/404) but the malicious probe comes back with a
+    block-ish status the benign one did NOT, that difference is itself evidence of
+    an inline WAF — reported at low confidence, vendor unidentified (this is exactly
+    the generic-detection fallback wafw00f uses). Conservative on purpose: an app
+    error on the malicious probe (500/400) is not in `_BLOCK_CODES`, so it never
+    fabricates a WAF where the origin merely choked."""
+    if len(responses) < 2:
+        return None
+    benign, malicious = responses[0], responses[1]
+    bc = (getattr(benign, "code", "") or "")
+    mc = (getattr(malicious, "code", "") or "")
+    benign_passed = bc[:1] in ("2", "3") or bc == "404"
+    malic_blocked = mc in _BLOCK_CODES and mc != bc
+    if not (benign_passed and malic_blocked):
+        return None
+    srv = ""
+    mh = getattr(malicious, "headers", None) or {}
+    if isinstance(mh, dict) and mh.get("server"):
+        srv = f", server={mh['server']!r}"
+    return WafGuess(
+        "Generic/Unknown WAF", 0.3,
+        f"behavioral: benign HTTP {bc} reached origin, attack probe -> HTTP {mc} blocked{srv} "
+        "(a WAF is inline; vendor not identified by any known signature)")
+
 
 def fingerprint(target, sender=None) -> list["WafGuess"]:
     """Identify the WAF (if any) in front of `target`.
@@ -207,6 +244,14 @@ def fingerprint(target, sender=None) -> list["WafGuess"]:
         # distinct pattern hits (dedupe across the two probes), capped at 1.0
         confidence = min(len(dict.fromkeys(hits)) / total_patterns, 1.0)
         guesses.append(WafGuess(sig["name"], round(confidence, 2), "; ".join(dict.fromkeys(hits))))
+
+    # Behavioral fallback: if no vendor signature matched but the attack probe was
+    # clearly blocked while the benign one passed, report a generic inline WAF
+    # instead of an empty (misleading "no WAF") result.
+    if not guesses:
+        g = _behavioral_waf_guess(responses)
+        if g is not None:
+            guesses.append(g)
 
     guesses.sort(key=lambda g: g.confidence, reverse=True)
     return guesses

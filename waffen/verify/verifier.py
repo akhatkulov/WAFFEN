@@ -24,6 +24,8 @@ import subprocess
 import urllib.parse
 from dataclasses import dataclass
 
+from ..core.oracle import apply_auth
+
 
 @dataclass
 class Verification:
@@ -31,6 +33,22 @@ class Verification:
     confidence: float
     reason: str
     attack_class: str
+
+
+def _send(oracle, payload: str, retries: int = 2):
+    """Send a verification probe, retrying briefly on a transient DOWN.
+
+    Verification issues only 1-2 high-value requests per finding; if one of them
+    transiently fails (DOWN: timeout / 000 / 502), a naive checker reads the empty
+    body as 'exploit not confirmed' — a FALSE NEGATIVE that silently discards a real
+    bypass. A couple of quick retries on DOWN (the oracle already backs off between
+    sends) turns a flaky transport back into a decisive verdict."""
+    resp = oracle.send(payload)
+    attempts = 0
+    while getattr(resp, "verdict", "") == "DOWN" and attempts < retries:
+        attempts += 1
+        resp = oracle.send(payload)
+    return resp
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +68,7 @@ def _check_xss(oracle, payload: str, attack_class: str) -> Verification:
     as NOT exploitable — that's exactly the "got through as garbage" case
     this verifier exists to catch.
     """
-    resp = oracle.send(payload)
+    resp = _send(oracle, payload)
     body = resp.body or ""
     if not body:
         return Verification(False, 0.1, "empty response body; cannot confirm reflection", attack_class)
@@ -84,6 +102,10 @@ _SQL_ERROR_PATTERNS = [
     r"ora-\d{5}", r"postgresql.*error", r"pg_query\(\)", r"sqlite3::",
     r"unclosed quotation mark", r"microsoft ole db provider for sql server",
     r"sqlstate\[", r"you have an error in your sql syntax",
+    # SQLite / Sequelize (Node ORMs, e.g. OWASP Juice Shop) — the literal engine
+    # error string ("SQLITE_ERROR: near \"...\": syntax error") and ORM wrappers.
+    r"sqlite_error", r"sqlite3?[._]\w*error", r"unrecognized token",
+    r"sequelize\w*error", r"\bsequelize\b",
 ]
 
 
@@ -108,7 +130,7 @@ def _check_sqli(oracle, payload: str, attack_class: str) -> Verification:
     the two responses: a meaningful size/body differential between the
     "true" and "false" variants is evidence of a working boolean-blind SQLi.
     """
-    resp_true = oracle.send(payload)
+    resp_true = _send(oracle, payload)
     body = resp_true.body or ""
     for pat in _SQL_ERROR_PATTERNS:
         if re.search(pat, body, re.I):
@@ -121,7 +143,7 @@ def _check_sqli(oracle, payload: str, attack_class: str) -> Verification:
                              "no SQL error signature found, and payload has no recognizable boolean "
                              "clause to differential-test", attack_class)
 
-    resp_false = oracle.send(false_variant)
+    resp_false = _send(oracle, false_variant)
     if resp_true.body == resp_false.body:
         return Verification(False, 0.4,
                              "true/false variants produced byte-identical responses; "
@@ -166,7 +188,7 @@ def _check_cmdi(oracle, payload: str, attack_class: str) -> Verification:
         # payload's own injection syntax, best-effort.
         variant = payload + f";echo {token}"
 
-    resp = oracle.send(variant)
+    resp = _send(oracle, variant)
     body = resp.body or ""
     if token in body:
         return Verification(True, 0.85,
@@ -193,7 +215,7 @@ def _check_traversal(oracle, payload: str, attack_class: str) -> Verification:
     the php://filter/convert.base64-encode trick (decodes long base64 blobs in
     the body and checks whether any of them is actually PHP source).
     """
-    resp = oracle.send(payload)
+    resp = _send(oracle, payload)
     body = resp.body or ""
 
     if _PASSWD_RE.search(body):
@@ -251,7 +273,7 @@ def _check_ssti(oracle, payload: str, attack_class: str) -> Verification:
     if variant is None:
         variant = f"{{{{{a}*{b}}}}}"
 
-    resp = oracle.send(variant)
+    resp = _send(oracle, variant)
     body = resp.body or ""
     if str(product) in body:
         return Verification(True, 0.9,
@@ -316,6 +338,7 @@ def _fetch_headers(target, payload: str, timeout: int | None = None) -> str:
         else:
             cmd += ["-X", method, url]
 
+        cmd = apply_auth(cmd, t)  # thread --header/--cookie so CRLF verify works behind auth
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=to + 5).stdout
         for sep in ("\r\n\r\n", "\n\n"):
             if sep in out:
@@ -364,7 +387,7 @@ def _check_crlf(oracle, payload: str, attack_class: str) -> Verification:
                                  "confirmed", attack_class)
 
     for variant in variants:
-        resp = oracle.send(variant)
+        resp = _send(oracle, variant)
         body = resp.body or ""
         if token in body:
             return Verification(True, 0.4,
@@ -380,6 +403,108 @@ def _check_crlf(oracle, payload: str, attack_class: str) -> Verification:
 
 
 # ---------------------------------------------------------------------------
+# NoSQL Injection
+# ---------------------------------------------------------------------------
+_NOSQL_ERROR_PATTERNS = [
+    r"mongo\w*\s*(error|exception)", r"mongoerror", r"\be11000\b", r"\bbson\b",
+    r"cast to objectid failed", r"unknown operator", r"\$where", r"unexpected token .*in json",
+    r"couchdb", r"redis.*wrong number", r"unterminated string",
+]
+
+
+def _flip_nosql(payload: str) -> str | None:
+    """Best-effort: turn an always-true NoSQL clause into an always-false one."""
+    pairs = [
+        ("[$ne]=1", "[$eq]=1"), ("[$ne]=", "[$eq]="), ("$ne", "$eq"),
+        ("[$gt]=", "[$lt]="), ("'1'=='1'", "'1'=='2'"), ("1==1", "1==2"),
+        ("||'1'=='1", "||'1'=='2"), ("' || '1'=='1", "' || '1'=='2"), ("true", "false"),
+    ]
+    for true_tok, false_tok in pairs:
+        if true_tok in payload:
+            return payload.replace(true_tok, false_tok, 1)
+    return None
+
+
+def _check_nosql(oracle, payload: str, attack_class: str) -> Verification:
+    """NoSQL error-based or boolean-differential heuristic (mirrors _check_sqli).
+
+    Looks first for a NoSQL engine error signature (Mongo/BSON/Couch/Redis), then
+    flips an always-true operator clause ([$ne]->[$eq], ' || '1'=='1 -> ...'2', ...)
+    and compares the true vs false responses: a meaningful size/body differential
+    is evidence the injected operator actually changed the query's result set."""
+    resp_true = _send(oracle, payload)
+    body = resp_true.body or ""
+    for pat in _NOSQL_ERROR_PATTERNS:
+        if re.search(pat, body, re.I):
+            return Verification(True, 0.7, f"NoSQL engine error signature matched in response ({pat!r})",
+                                 attack_class)
+
+    false_variant = _flip_nosql(payload)
+    if false_variant is None or false_variant == payload:
+        return Verification(False, 0.2,
+                             "no NoSQL error signature, and payload has no recognizable always-true "
+                             "clause to differential-test", attack_class)
+
+    resp_false = _send(oracle, false_variant)
+    if resp_true.body == resp_false.body:
+        return Verification(False, 0.4,
+                             "true/false NoSQL variants produced byte-identical responses; "
+                             "no differential observed", attack_class)
+    denom = max(resp_true.size, resp_false.size, 1)
+    delta = abs(resp_true.size - resp_false.size) / denom
+    if resp_true.verdict == "THROUGH" and delta > 0.02:
+        return Verification(True, 0.65,
+                             f"NoSQL boolean differential: true-variant size={resp_true.size} vs "
+                             f"false-variant size={resp_false.size} (Δ={delta:.1%})", attack_class)
+    return Verification(False, 0.3,
+                         "true/false NoSQL variants differ slightly but not enough to confirm", attack_class)
+
+
+# ---------------------------------------------------------------------------
+# Upload Insecure Files
+# ---------------------------------------------------------------------------
+_UPLOAD_REJECT_RE = re.compile(
+    r"(not allowed|invalid file|forbidden|illegal|unsupported|disallowed|"
+    r"bad extension|file type not|not permitted|blocked|rejected|"
+    r"only .{0,24}(jpg|jpeg|png|gif|pdf|image)s? (are )?(allowed|permitted|accepted))", re.I)
+
+
+def _check_upload(oracle, payload: str, attack_class: str) -> Verification:
+    """Insecure-file-upload heuristic.
+
+    `payload` is the uploaded FILENAME the search got past the WAF (shell.phtml,
+    'shell.php;.jpg', 'shell.php%00.jpg', ...). A THROUGH verdict only means the WAF
+    did not block the multipart request — NOT that the application accepted the
+    dangerous file. The oracle (inject=upload) re-sends the upload with an inert,
+    marked probe file under that filename; we read the app's own reaction:
+
+      - an explicit extension/type rejection  -> NOT exploitable (the app defends
+        itself even though the WAF passed the request);
+      - acceptance (2xx / THROUGH, no rejection text) -> the dangerous extension got
+        in past BOTH the WAF and the app's own checks (confidence 0.55). We stop at
+        'accepted': proving the file is then served/executed is app-specific and the
+        probe content is deliberately inert (a marker, never a working shell).
+    """
+    resp = _send(oracle, payload)
+    body = resp.body or ""
+    if resp.verdict == "DOWN":
+        return Verification(False, 0.2, "upload probe failed (transport DOWN); acceptance not confirmed",
+                             attack_class)
+    if _UPLOAD_REJECT_RE.search(body):
+        return Verification(False, 0.6,
+                             f"app rejected the dangerous upload '{payload}' — extension/type filtered at "
+                             "the app layer (WAF let it pass, but the app defends itself)", attack_class)
+    if resp.verdict == "THROUGH" and resp.code[:1] == "2":
+        return Verification(True, 0.55,
+                             f"app accepted the dangerous upload '{payload}' (HTTP {resp.code}, no extension "
+                             "rejection) — it passed BOTH the WAF and the app; serving/execution not probed",
+                             attack_class)
+    return Verification(False, 0.3,
+                         f"upload '{payload}' passed the WAF but the app's acceptance is unconfirmed "
+                         f"(HTTP {resp.code or '?'}, no success or rejection signal)", attack_class)
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 _CHECKS = {
@@ -390,6 +515,8 @@ _CHECKS = {
     "File Inclusion": _check_traversal,
     "SSTI": _check_ssti,
     "CRLF Injection": _check_crlf,
+    "NoSQL Injection": _check_nosql,
+    "Upload Insecure Files": _check_upload,
 }
 
 

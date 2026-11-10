@@ -35,6 +35,12 @@ class Target:
     # default is insecure (curl -k), like every comparable tool. It is NOT silently
     # scattered — it is this one explicit, overridable setting (CLI: --tls-verify).
     tls_verify: bool = False
+    # session / auth: extra request headers (e.g. "Authorization: Bearer ...",
+    # "X-CSRF-Token: ...") and a cookie string ("sid=abc; csrf=xyz"). These thread
+    # through EVERY inject mode and EVERY request transform (see Oracle._with_auth),
+    # so a bypass search can run behind a login instead of only on open endpoints.
+    extra_headers: tuple[str, ...] = ()
+    cookie: str = ""
 
     def url(self) -> str:
         return self.base_url.rstrip("/") + self.path
@@ -61,6 +67,33 @@ class Response:
 # verdicts
 BLOCKED, THROUGH, DOWN = "BLOCKED", "THROUGH", "DOWN"
 _DOWN_CODES = {"", "000", "502", "503", "504"}
+
+
+def apply_auth(argv: list[str], target) -> list[str]:
+    """Splice session/auth into a curl argv, right after 'curl'.
+
+    Single source of truth for `--header`/`--cookie`, shared by Oracle._build and
+    the verifier's own separate curl path, so authentication threads through every
+    request either of them issues (every inject mode, every transform, and the
+    verifier's header-fetch probe). An auth cookie folds into an existing `Cookie:`
+    header when one is present (e.g. under `--inject cookie`) so a session cookie
+    and a cookie-injection payload share one valid header instead of colliding."""
+    eh = tuple(getattr(target, "extra_headers", ()) or ())
+    ck = getattr(target, "cookie", "") or ""
+    if not argv or argv[0] != "curl" or not (eh or ck):
+        return argv
+    rest = list(argv[1:])
+    inject: list[str] = []
+    for h in eh:
+        inject += ["-H", h]
+    if ck:
+        for i in range(1, len(rest)):
+            if rest[i - 1] == "-H" and rest[i].lower().startswith("cookie:"):
+                rest[i] = rest[i].rstrip() + "; " + ck
+                break
+        else:
+            inject += ["-H", f"Cookie: {ck}"]
+    return [argv[0]] + inject + rest
 
 
 class Oracle:
@@ -128,11 +161,16 @@ class Oracle:
         return resp
 
     # -- request building -----------------------------------------------------
+    def _with_auth(self, argv: list[str]) -> list[str]:
+        """Thread session/auth (`--header`, `--cookie`) into a curl argv, for BOTH
+        the default-built request and any transform-built one. See `apply_auth`."""
+        return apply_auth(argv, self.t)
+
     def _build(self, payload: str) -> list[str]:
         if self.request_transform is not None:
             argv = self.request_transform.build(self.t, payload)
             if argv:
-                return argv
+                return self._with_auth(argv)
         t = self.t
         cmd = ["curl", t.curl_sec(), "-m", str(t.timeout),
                "-w", "\n%{http_code} %{size_download} %{time_total}",
@@ -171,7 +209,7 @@ class Oracle:
             cmd += ["-X", t.method, url, "-F", f'{t.param}=@{tmp_path};filename="{fname}"']
         else:
             raise ValueError(f"unknown inject mode: {t.inject}")
-        return cmd
+        return self._with_auth(cmd)
 
     def _curl_send(self, payload: str) -> Response:
         cmd = self._build(payload)
