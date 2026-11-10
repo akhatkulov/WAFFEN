@@ -34,9 +34,9 @@ verification*. That combination is what makes WAFFEN's "bypass" count trustworth
 
 ## Real, reproducible results (all from VALIDATION.md)
 
-Measured against **four WAFs across two detection models** — the team's RedEye, a local **OWASP
-CRS / ModSecurity** lab, **BunkerWeb**, and **NAXSI** (a different, whitelist/scoring model)
-([`lab/`](../lab)):
+Measured against **five WAFs across three detection models** — RedEye, a local **OWASP CRS /
+ModSecurity** lab, **BunkerWeb** (regex/CRS family), **NAXSI** (whitelist/scoring), and
+**open-appsec** (machine-learning / contextual) ([`lab/`](../lab)):
 
 - **Search finds what static lists miss.** Against OWASP CRS paranoia-level 1, single-seed
   testing reads SQLi as "75% blocked" (1 seed through). WAFFEN's search engine found
@@ -81,11 +81,12 @@ CRS / ModSecurity** lab, **BunkerWeb**, and **NAXSI** (a different, whitelist/sc
 - **A large standardized scoring corpus** → **GoTestWAF** ships one; WAFFEN's KB (181 seeds
   across 14 classes, up from 47) feeds the *search*, and it can harvest PayloadsAllTheThings,
   but that isn't a single curated-for-scoring corpus.
-- **Scale of validation** → proven on **4** WAFs across **2 detection models**: RedEye + OWASP
-  CRS + BunkerWeb (regex blacklist / anomaly-scoring) **and NAXSI** (whitelist/scoring — a
-  genuinely different model, where WAFFEN measured a visibly different per-class profile, e.g.
-  SSTI 50% vs CRS's 83–100%). Still not dozens, and no ML/semantic WAF (e.g. SafeLine) yet;
-  transport is curl/http.client (no HTTP/2, no headless browser).
+- **Scale of validation** → proven on **5** WAFs across **3 detection models**: RedEye + OWASP
+  CRS + BunkerWeb (regex blacklist / anomaly-scoring), **NAXSI** (whitelist/scoring), and
+  **open-appsec** (machine-learning). Each model shows a visibly different coverage profile
+  (e.g. open-appsec's open-source ML lets ~45–65% through at 0% FP, far more permissive than CRS).
+  Still not dozens, and all local/authorized; transport is curl/http.client (no HTTP/2, no
+  headless browser).
 
 ## Known limitations surfaced by self-audit (honest)
 

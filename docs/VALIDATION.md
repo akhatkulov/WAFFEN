@@ -268,6 +268,22 @@ pick under a tight budget. The benchmark also surfaced a real crash — `reward_
 `OverflowError` for a large negative score delta (a small score after a THROUGH parent) — now fixed
 with a numerically-stable sigmoid (`tests/test_bandit.py`).
 
+### 6.12 A 5th WAF and a 3rd detection model — open-appsec (ML), + a calibration bug fixed
+To validate beyond regex (CRS) and whitelist (NAXSI) models, **open-appsec** — a
+machine-learning WAF — was stood up (`lab/openappsec/`, prevent-learn, confidence medium) in
+front of Juice Shop on `:18083`. WAFFEN flags it behaviorally, calibrates, and scores **~35%
+(signature) / ~55% (calibrated) coverage at 0% false-positives** — a much more permissive profile
+than CRS/NAXSI (the open-source ML model lets more through). WAFFEN now spans **5 WAFs across 3
+detection models** (regex / whitelist / ML).
+
+This run also surfaced a **real WAFFEN bug**: open-appsec sometimes calibrated at low confidence
+(0.4) with overlapping block/benign size bands, so the learned model classified *benign* responses
+as `unresolved → BLOCKED` — a **100% false-positive artifact**. Direct probing proved open-appsec
+was *not* over-blocking (every benign term returned 200), confirming it was WAFFEN's calibration,
+not the WAF. Fixed: calibration now only overrides the signature verdict when confidence ≥ 0.5
+(`MIN_CALIBRATION_CONFIDENCE`), else it falls back to the signature — applied in the oracle and both
+eval/dataset classifiers (`tests/test_calibration_gate.py`). High-confidence WAFs are unaffected.
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline

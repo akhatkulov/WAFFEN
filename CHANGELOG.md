@@ -18,9 +18,10 @@ plus the fixes and features that cross-WAF validation surfaced.
     in PayloadsAllTheThings) — "confirmed injectable" becomes "confirmed, here's the proof value".
   - **Stronger corpus harvester** (`eval/corpus.py`): broader PayloadsAllTheThings dir→class
     mapping + robust extraction; fixed a latent bug that dropped fence-lookalike wordlist lines.
-  - **Validated on 4 WAFs across 2 detection models** — BunkerWeb (`lab/bunkerweb-compose.yml`,
-    71.6% / 0% FP) and **NAXSI** (`lab/naxsi-compose.yml`, a whitelist/scoring model, 73.5% / 0% FP
-    with a visibly different per-class profile) join RedEye + OWASP CRS.
+  - **Validated on 5 WAFs across 3 detection models** — RedEye + OWASP CRS + BunkerWeb
+    (regex/CRS), **NAXSI** (`lab/naxsi-compose.yml`, whitelist/scoring, 73.5% / 0% FP), and
+    **open-appsec** (`lab/openappsec/`, machine-learning, ~35–55% / 0% FP) — each with a
+    visibly different coverage profile.
 - **Much wider coverage** (gaps from `docs/COMPARISON.md`, closed via an independently
   verified multi-agent pass):
   - WAF **fingerprint signatures 9 → 48** vendors (Barracuda, FortiWeb, Citrix NetScaler,
@@ -54,6 +55,10 @@ plus the fixes and features that cross-WAF validation surfaced.
   **verified** SQLi bypasses of CRS paranoia-level-1, confirmed by the live DB error.
 
 ### Fixed
+- **Calibration false-positive artifact**: a low-confidence calibration (seen vs open-appsec's
+  ML model, confidence 0.4, overlapping size bands) classified benign as `unresolved → BLOCKED`,
+  inflating false-positives to 100%. Calibration now overrides the signature verdict only at
+  confidence ≥ 0.5 (shared `MIN_CALIBRATION_CONFIDENCE`), else falls back to the signature.
 - **Robustness (self-audit)**: concurrent batches now run a post-batch canary probe so
   ban detection isn't blind above `--concurrency 1` (and `eval`/`dataset` warn); the
   deep-SQLi UNION walk is bounded by `_UNION_MAX_COLS=6`; the pooled transport caps the
