@@ -107,7 +107,8 @@ def cmd_bypass(args) -> int:
         max_requests=args.max_requests, stop_on_first=args.stop_on_first,
         do_calibrate=args.calibrate, do_learn=args.learn, concurrency=args.concurrency,
         canary_payload=args.canary or None, canary_every=args.canary_every,
-        do_verify=args.verify and not args.mock, sender=sender, on_event=ev,
+        do_verify=args.verify and not args.mock, sender=sender,
+        transport=args.transport, on_event=ev,
     )
     report.print_engine_summary(runs)
     if args.out:
@@ -188,7 +189,7 @@ def cmd_eval(args) -> int:
             from .verify.calibrate import calibrate
             from .core.oracle import Oracle as _O
             from .kb.inject_map import resolve_base as _rb
-            calibration = calibrate(_O(_rb(target), sender=sender))
+            calibration = calibrate(_O(_rb(target), sender=sender, transport=args.transport))
             print(f"[*] calibrated: waf_detected={getattr(calibration,'waf_detected',None)} "
                   f"confidence={getattr(calibration,'confidence',None)}")
         except Exception as e:
@@ -204,7 +205,7 @@ def cmd_eval(args) -> int:
     print(ui.rule())
 
     res = run_eval(target, cases, benign=benign, calibration=calibration, sender=sender,
-                   concurrency=args.concurrency, delay=args.delay)
+                   concurrency=args.concurrency, delay=args.delay, transport=args.transport)
 
     o = res.overall
     print("\n" + ui.rule("COVERAGE") + ui.gray("   █ blocked = WAF caught it · ░ gap = reached origin"))
@@ -255,7 +256,7 @@ def cmd_eval(args) -> int:
         from .core.transforms import find_inspection_cutoff
         print("\n" + ui.rule("BODY-INSPECTION CUTOFF") +
               ui.gray(f"  binary search, up to {args.cutoff_probes} probes"))
-        cutoff_oracle = _O(target, sender=sender, calibration=calibration)
+        cutoff_oracle = _O(target, sender=sender, calibration=calibration, transport=args.transport)
         cutoff = find_inspection_cutoff(cutoff_oracle, param="padding", probes=args.cutoff_probes)
         if cutoff is None:
             print(ui.gray("  no cutoff found within the probe budget (or the signature never got through)"))
@@ -302,7 +303,7 @@ def cmd_dataset(args) -> int:
             from .verify.calibrate import calibrate
             from .core.oracle import Oracle as _O
             from .kb.inject_map import resolve_base as _rb
-            calibration = calibrate(_O(_rb(target), sender=sender))
+            calibration = calibrate(_O(_rb(target), sender=sender, transport=args.transport))
         except Exception as e:
             print(f"[warn] calibration failed: {e}", file=sys.stderr)
 
@@ -316,7 +317,7 @@ def cmd_dataset(args) -> int:
     print(ui.rule())
 
     out = build_dataset(target, cases, benign=benign, calibration=calibration, sender=sender,
-                        concurrency=args.concurrency, delay=args.delay,
+                        concurrency=args.concurrency, delay=args.delay, transport=args.transport,
                         canary_payload=args.canary or None, canary_every=args.canary_every)
     records, stats = out["records"], out["stats"]
     bal = class_balance(records)
@@ -545,6 +546,10 @@ def _add_target_args(p):
                         "Threads through every inject mode and transform — run a search behind auth")
     p.add_argument("--cookie", default="", metavar="'a=1; b=2'",
                    help="cookie string sent with every request (session auth)")
+    p.add_argument("--transport", default="curl", choices=["curl", "pooled"],
+                   help="request transport: 'curl' (default, uniform, required for request "
+                        "transforms) or 'pooled' (keep-alive http.client — faster on long runs; "
+                        "falls back to curl for transform sends)")
 
 
 def build_parser() -> argparse.ArgumentParser:

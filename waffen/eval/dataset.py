@@ -67,7 +67,7 @@ def _make_record(payload: str, label: str, attack_class: str, resp, target: Targ
 def build_dataset(target: Target, attack_cases, benign=None, *, calibration=None,
                    sender=None, concurrency: int = 6, delay: float = 0.0,
                    canary_payload: str | None = None, canary_every: int = 25,
-                   drop_down: bool = True, dedup: bool = True) -> dict:
+                   transport: str = "curl", drop_down: bool = True, dedup: bool = True) -> dict:
     """Send attack + benign payloads at `target`, label them, return a dataset.
 
     `attack_cases` = iterable of (attack_class, payload) -> label "malicious".
@@ -92,7 +92,8 @@ def build_dataset(target: Target, attack_cases, benign=None, *, calibration=None
     # the base oracle serves benign + the canary; "auto" isn't a concrete inject mode,
     # so resolve it to `query` for them (per-class auto routing applies to attacks only).
     base_target = _dc.replace(target, inject="query") if auto else target
-    oracle = Oracle(base_target, sender=sender, canary_payload=canary_payload, canary_every=canary_every)
+    oracle = Oracle(base_target, sender=sender, canary_payload=canary_payload,
+                    canary_every=canary_every, transport=transport)
     attack_cases = list(attack_cases)
     benign = list(benign) if benign else []
 
@@ -112,8 +113,8 @@ def build_dataset(target: Target, attack_cases, benign=None, *, calibration=None
             by_cls.setdefault(cls, []).append(payload)
         for cls, payloads in by_cls.items():
             cls_target = _eff(target, cls) if auto else target
-            cls_oracle = Oracle(cls_target, sender=sender,
-                                canary_payload=canary_payload, canary_every=canary_every) if auto else oracle
+            cls_oracle = Oracle(cls_target, sender=sender, canary_payload=canary_payload,
+                                canary_every=canary_every, transport=transport) if auto else oracle
             responses = cls_oracle.send_many(payloads, concurrency=concurrency, delay=delay)
             for payload, resp in zip(payloads, responses):
                 records.append(_make_record(payload, "malicious", cls, resp, cls_target, calibration))
