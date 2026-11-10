@@ -3,6 +3,40 @@
 All notable changes to WAFFEN are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [Unreleased]
+
+Validated against a **second, independent WAF** (local OWASP CRS / ModSecurity),
+plus the fixes and features that cross-WAF validation surfaced.
+
+### Added
+- **Session / auth support** (`--header`/`-H`, `--cookie`): threaded through every
+  inject mode **and** every request transform via a single `oracle.apply_auth`, so a
+  bypass search can run behind a login. An auth cookie folds into a cookie-injection
+  payload's `Cookie:` header instead of colliding with it. (`bypass`, `eval`,
+  `dataset`, `fingerprint`.)
+- **Behavioral WAF fingerprinting**: when no vendor signature matches but a benign
+  probe reaches the origin while the attack probe is blocked, report a generic inline
+  WAF (low confidence) instead of a misleading "no WAF". Catches CRS/ModSecurity
+  behind nginx (generic `403`, no vendor header) — which previously fingerprinted as
+  nothing.
+- **Two new semantic verifiers**: NoSQL Injection (engine-error + boolean
+  differential) and Upload Insecure Files (app accept-vs-reject of a dangerous
+  extension). Verified-class coverage is now 9 classes.
+- **Second-WAF lab**: `lab/docker-compose.yml` + `lab/README.md` (OWASP CRS nginx +
+  Juice Shop) and the validation record in `docs/VALIDATION.md` §6 — 3 distinct
+  **verified** SQLi bypasses of CRS paranoia-level-1, confirmed by the live DB error.
+
+### Fixed
+- **Verifier false negatives**: verification probes now retry on a transient `DOWN`
+  (a flaky transport no longer reads as "exploit not confirmed"); the CRLF verifier's
+  own `curl -i` header path now carries `--header`/`--cookie` too.
+- **SQL verifier blind to Node ORMs**: added SQLite / Sequelize error signatures
+  (`SQLITE_ERROR`, `unrecognized token`, …) — Juice Shop's injection errors were
+  invisible to the old MySQL/Oracle/Postgres-only table.
+- **Duplicate rule suggestions**: `bypass --rules` now emits one rule per distinct
+  (class, payload); the same bypass rediscovered under several transforms no longer
+  prints N copies.
+
 ## [0.1.0] — 2026-11-07
 
 First tagged release. A closed-loop, verified WAF evasion-path finder for targets

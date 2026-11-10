@@ -1,7 +1,10 @@
-# WAFFEN — Real-target validation (RedEye / juice-shop.redeyes.uz)
+# WAFFEN — Real-target validation (RedEye + OWASP CRS / ModSecurity)
 
-Honest record of live testing against the team's own RedEye-protected demo. All
-runs are against an authorized target the team owns.
+Honest record of live testing against two independent WAFs: the team's own
+RedEye-protected demo (§1–5, authorized target the team owns), and a local
+**OWASP Core Rule Set / ModSecurity** lab (§6) — the industry-standard
+open-source WAF — added to answer the earlier "validated on only one WAF"
+limitation. Every run is against a target the team owns or runs locally.
 
 ## 1. Fingerprint head-to-head — WAFFEN wins
 | Tool | Result |
@@ -85,7 +88,74 @@ WAFFEN (and GoTestWAF) self-ban on a full-corpus run — no built-in ban clearin
 Benign-first ordering fixes FP accuracy; full clean coverage still needs the test
 source un-banned (cleared via the RedEye panel) or batched with pauses.
 
+## 6. Second-WAF validation — OWASP CRS / ModSecurity (independent, industry-standard)
+The earlier passes only covered RedEye. To prove WAFFEN is not RedEye-specific, a
+**local second WAF** was stood up and the whole pipeline re-run against it.
+
+**Lab:** `owasp/modsecurity-crs:nginx` (CRS, paranoia level 1, anomaly-blocking)
+reverse-proxying a local `bkimminich/juice-shop` backend, on `localhost:18080`
+(`lab/docker-compose.yml`, `lab/README.md`). Same app, a different and much stricter WAF than
+RedEye. Block shape is nginx's generic `403 Forbidden` page — **no vendor header or
+body signature at all** (`Server: nginx` on both pass and block).
+
+### 6.1 Fingerprint — a real gap, found and fixed
+WAFFEN's signature table first reported **"no WAF"** against CRS — misleading, since
+attacks were plainly getting 403'd. CRS-behind-nginx exposes nothing to match. Fix:
+added a **behavioral fallback** — benign probe reaches origin (2xx) while the attack
+probe is blocked (403/406/…) ⇒ report a generic inline WAF at low confidence (the
+same generic-detection wafw00f falls back to). WAFFEN now reports
+`Generic/Unknown WAF (0.30)` with the differential as evidence, instead of "no WAF".
+
+### 6.2 Calibration + coverage — pipeline works unchanged
+- `--calibrate` against CRS: **waf_detected=True, confidence 0.80, block=HTTP 403**
+  learned automatically (RedEye's `"Request blocked by RedEye"` signature is
+  irrelevant here — calibration adapts with no code change).
+- `eval` (47 KB-seed attacks, 20 benign, `--inject query`): **overall coverage
+  42.6%**, **false positives 0/20 = 0.0%**. Per class CRS PL1 blocks XSS / Directory
+  Traversal / File Inclusion / SSTI at **100%**, SQL 75%, Command/NoSQL 50%. (The
+  Upload class reads ~4% here — a query-param artifact, same injection-point lesson
+  as §5a; not a real CRS gap.)
+
+### 6.3 Verified bypasses — WAFFEN beats CRS PL1 on the real SQLi endpoint
+Juice Shop's `/rest/products/search?q=` is a genuine SQLite-backed SQLi sink. Running
+the **verified** search (`bypass --verify`) found evasions that CRS PL1 lets through
+**and** that the verifier confirmed hit the database — **3 distinct payloads** (seen
+across the identity / hpp_duplicate / junk_prefix_param transforms, 9 findings before
+dedupe):
+
+| Mutation chain | Payload | Confirmed by |
+|---|---|---|
+| `whitespace_newline` | `'`⏎`OR`⏎`1=1-- -` | live `SQLITE_ERROR` in response |
+| `sql_string_concat_pipe` | `' O'\|\|'R '1'='1` | live `SQLITE_ERROR` in response |
+| *(identity)* | `admin'-- -` | live `SQLITE_ERROR` in response |
+
+CRS PL1's keyword regex misses the tautology once `OR` is split by a newline or a
+`'||'` string-concat; Juice Shop still parses it, erroring on the broken SQL — which
+is **error-based proof of injection**. This required a verifier fix the lab surfaced:
+the SQL error table had no SQLite/Sequelize signature (`SQLITE_ERROR`), so the Node
+app's errors were invisible — now added.
+
+**Honest scope:** these are **error-based** confirmations (HTTP 500 carrying a real DB
+error), not a completed `UNION`-exfil, and only against **paranoia level 1**; higher
+CRS paranoia blocks more. The headline is not "CRS is weak" — it is that WAFFEN's
+search + verifier **transfer cleanly to a second, independent, industry-standard WAF**
+and produce real, verified, deduplicated, rule-actionable findings there.
+
+### 6.4 Verifier honesty held on the second WAF too
+The same run's XSS search produced dozens of raw THROUGHs (mostly double-URL-encoded
+payloads that evade CRS but reach the app as inert text → HTTP 500). With `--verify`
+**none** were reported exploitable: a 500 with a *SQL error* is confirmed (6.3); a 500
+with *inert junk* is correctly rejected. The verifier distinguishes them by body
+content — the same no-false-bypass discipline §4 showed on RedEye, now cross-checked
+on CRS.
+
 ## Verdict
+- **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
+  ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
+  transfers to CRS with no code change beyond two real gaps the lab surfaced and fixed
+  (behavioral fingerprint fallback; SQLite error signature).
+- **Proven on CRS:** 3 distinct **verified** SQLi bypasses of CRS PL1 on a real SQLi
+  endpoint, confirmed by the live database error (not inflated 500 noise).
 - **Proven stronger / more trustworthy than the de-facto tools on this target:**
   names the WAF (vs wafw00f), avoids GoTestWAF's self-ban FP artifact, and never
   reports an unverified bypass as real.
