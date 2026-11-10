@@ -1,0 +1,23 @@
+# 4th WAF — NAXSI (a genuinely DIFFERENT detection model: whitelist/scoring, not the
+# regex-blacklist + anomaly-scoring of CRS/ModSecurity). Pure NAXSI nginx in front of
+# the same Juice Shop on :18082. Bring up docker-compose.yml first (creates the network).
+# See docs/VALIDATION.md §6.  Uses naxsi-nginx.conf (enforcing mode, CheckRule ... BLOCK).
+#
+#   docker compose -f naxsi-compose.yml -p waffen-lab-naxsi up -d
+#   waffen eval --target http://localhost:18082 --path /rest/products/search \
+#       --all-classes --calibrate --block-signature "request blocked" --benign benign.txt
+services:
+  naxsi:
+    image: scollazo/naxsi-waf-with-ui:latest   # nginx built with the naxsi module
+    platform: linux/amd64                        # runs under emulation on arm64
+    container_name: waffen-lab-naxsi
+    entrypoint: ["nginx", "-c", "/etc/nginx/nginx.conf"]
+    volumes:
+      - ./naxsi-nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "18082:8080"
+    networks: [waffen-lab_default]
+    restart: unless-stopped
+networks:
+  waffen-lab_default:
+    external: true

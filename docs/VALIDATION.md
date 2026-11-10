@@ -223,7 +223,17 @@ Closing the documented weak sides (see `docs/COMPARISON.md`):
   error-leaking Juice Shop endpoint the error-signature channel confirms first (0.80), and the
   extraction channel (0.95) is exercised by unit tests for error-suppressed targets.
 
-### 6.9 All 14 verifiers live-validated (self-audit follow-up)
+### 6.9 A 4th WAF, and a genuinely different detection model — NAXSI
+The audit noted all WAFs so far were regex/CRS-family. **NAXSI** (`lab/naxsi-compose.yml` +
+`lab/naxsi-nginx.conf`, enforcing mode) is a **whitelist/scoring** WAF — a different model —
+in front of the same Juice Shop on `:18082`. WAFFEN flags it behaviorally (`Generic/Unknown`,
+0.30 — the custom deny page carries no NAXSI header), auto-calibrates (`waf_detected=True`,
+0.80), and scores **73.5% coverage at 0% false-positives**. Crucially the **per-class profile
+differs from CRS** — SSTI 50% (vs CRS 83–100%), Open Redirect 57%, CRLF 62.5%, while SQL/XSS/
+Traversal stay 100% — evidence WAFFEN captures model-specific behavior, not just one WAF's shape.
+WAFFEN is now validated on **RedEye + CRS + BunkerWeb + NAXSI** (4 WAFs, 2 detection models).
+
+### 6.10 All 14 verifiers live-validated (self-audit follow-up)
 The self-audit flagged that 5 verifiers (XXE, SSRF, LDAP, SSI, Open Redirect) were unit-tested
 only — Juice Shop hardens or lacks those sinks. A purpose-built vulnerable sink app
 (`lab/vuln_sinks.py`, stdlib only) now gives each verifier a real socket crafted to match its

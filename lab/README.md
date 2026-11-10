@@ -49,11 +49,25 @@ waffen eval --target http://localhost:18081 --path /rest/products/search \
     --all-classes --calibrate --block-signature "403 | Forbidden" --benign /tmp/benign.txt
 ```
 
+## A 4th WAF — NAXSI (a *different* detection model)
+
+`naxsi-compose.yml` + `naxsi-nginx.conf` put **NAXSI** (whitelist/scoring — not CRS's
+regex blacklist) in front of the same Juice Shop on `:18082`, so WAFFEN is validated
+across two detection models, not just the CRS family:
+
+```sh
+docker compose -p waffen-lab up -d
+docker compose -f naxsi-compose.yml -p waffen-lab-naxsi up -d
+waffen eval --target http://localhost:18082 --path /rest/products/search \
+    --all-classes --calibrate --block-signature "request blocked" --benign /tmp/benign.txt
+```
+
 ## Teardown
 
 ```sh
 docker compose -p waffen-lab down
-docker compose -f bunkerweb-compose.yml -p waffen-lab-bw down   # if the BunkerWeb lab was started
+docker compose -f bunkerweb-compose.yml -p waffen-lab-bw down    # if BunkerWeb was started
+docker compose -f naxsi-compose.yml -p waffen-lab-naxsi down     # if NAXSI was started
 ```
 
 > Local testing only. This lab is self-contained; point WAFFEN at third-party

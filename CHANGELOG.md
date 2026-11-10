@@ -18,8 +18,9 @@ plus the fixes and features that cross-WAF validation surfaced.
     in PayloadsAllTheThings) — "confirmed injectable" becomes "confirmed, here's the proof value".
   - **Stronger corpus harvester** (`eval/corpus.py`): broader PayloadsAllTheThings dir→class
     mapping + robust extraction; fixed a latent bug that dropped fence-lookalike wordlist lines.
-  - **Validated on a 3rd independent WAF** — BunkerWeb (`lab/bunkerweb-compose.yml`): 71.6%
-    coverage at 0% false-positives, behavioral fingerprint, auto-calibration.
+  - **Validated on 4 WAFs across 2 detection models** — BunkerWeb (`lab/bunkerweb-compose.yml`,
+    71.6% / 0% FP) and **NAXSI** (`lab/naxsi-compose.yml`, a whitelist/scoring model, 73.5% / 0% FP
+    with a visibly different per-class profile) join RedEye + OWASP CRS.
 - **Much wider coverage** (gaps from `docs/COMPARISON.md`, closed via an independently
   verified multi-agent pass):
   - WAF **fingerprint signatures 9 → 48** vendors (Barracuda, FortiWeb, Citrix NetScaler,

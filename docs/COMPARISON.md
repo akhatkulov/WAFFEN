@@ -34,8 +34,9 @@ verification*. That combination is what makes WAFFEN's "bypass" count trustworth
 
 ## Real, reproducible results (all from VALIDATION.md)
 
-Measured against **three independent WAFs** — the team's RedEye, a local **OWASP CRS /
-ModSecurity** lab, and **BunkerWeb** (a distinct WAF product) ([`lab/`](../lab)):
+Measured against **four WAFs across two detection models** — the team's RedEye, a local **OWASP
+CRS / ModSecurity** lab, **BunkerWeb**, and **NAXSI** (a different, whitelist/scoring model)
+([`lab/`](../lab)):
 
 - **Search finds what static lists miss.** Against OWASP CRS paranoia-level 1, single-seed
   testing reads SQLi as "75% blocked" (1 seed through). WAFFEN's search engine found
@@ -80,10 +81,11 @@ ModSecurity** lab, and **BunkerWeb** (a distinct WAF product) ([`lab/`](../lab))
 - **A large standardized scoring corpus** → **GoTestWAF** ships one; WAFFEN's KB (181 seeds
   across 14 classes, up from 47) feeds the *search*, and it can harvest PayloadsAllTheThings,
   but that isn't a single curated-for-scoring corpus.
-- **Scale of validation** → proven on **3** WAFs so far (RedEye + OWASP CRS + BunkerWeb), not
-  dozens — and all three are **regex/CRS-family** (BunkerWeb bundles CRS); a genuinely different
-  detection model (ML/semantic like SafeLine, or whitelist like NAXSI) is **not yet validated**.
-  Transport is curl/http.client (no HTTP/2, no headless browser).
+- **Scale of validation** → proven on **4** WAFs across **2 detection models**: RedEye + OWASP
+  CRS + BunkerWeb (regex blacklist / anomaly-scoring) **and NAXSI** (whitelist/scoring — a
+  genuinely different model, where WAFFEN measured a visibly different per-class profile, e.g.
+  SSTI 50% vs CRS's 83–100%). Still not dozens, and no ML/semantic WAF (e.g. SafeLine) yet;
+  transport is curl/http.client (no HTTP/2, no headless browser).
 
 ## Known limitations surfaced by self-audit (honest)
 
