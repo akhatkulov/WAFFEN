@@ -207,7 +207,13 @@ def _sql_context_wrappers(payload: str) -> list[str]:
     return uniq
 
 
-def _sqli_union_confirm(oracle, payload: str, attack_class: str, max_cols: int = 8):
+# Deep-SQLi request budget: the UNION column-count walk probes up to this many
+# columns per context wrapper (and wrappers are capped at 2), so the deep-confirm
+# stays bounded (~a dozen extra sends) and never balloons a verified run.
+_UNION_MAX_COLS = 6
+
+
+def _sqli_union_confirm(oracle, payload: str, attack_class: str, max_cols: int = _UNION_MAX_COLS):
     """Ascending UNION column-count probe.
 
     For each context wrapper, injects `UNION SELECT NULL`, `UNION SELECT NULL,NULL`,

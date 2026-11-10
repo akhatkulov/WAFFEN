@@ -22,14 +22,15 @@ def test_send_many_concurrency_1_triggers_canary_ban_detection():
     assert o.ban_suspected is True, "send_many(concurrency=1) must route through send() for canary to fire"
 
 
-def test_send_many_concurrency_gt1_does_not_use_canary():
-    # documented limitation: concurrent batches skip the canary check entirely
+def test_send_many_concurrency_gt1_does_a_post_batch_canary_check():
+    # concurrency>1 can't do a per-request canary (ordering isn't stable), but it now
+    # does ONE post-batch probe so ban_suspected stays meaningful (post-hoc, not real-time).
     def sender(p):
         return Response(BLOCKED, "403", 10, 0.01, "Request blocked by RedEye")
 
     o = Oracle(Target(base_url="x"), sender=sender, canary_payload="CANARY", canary_every=1)
     o.send_many(["a", "b", "c", "d"], concurrency=4)
-    assert o.ban_suspected is False  # never checked at concurrency>1
+    assert o.ban_suspected is True  # post-batch canary probe caught the ban
 
 
 def test_build_dataset_measures_benign_before_attacks():

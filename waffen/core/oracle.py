@@ -68,6 +68,11 @@ class Response:
 BLOCKED, THROUGH, DOWN = "BLOCKED", "THROUGH", "DOWN"
 _DOWN_CODES = {"", "000", "502", "503", "504"}
 
+# Cap how much of a response body the pooled transport reads into memory — a WAF
+# block page / API response is small, and verdict signatures live near the top, so
+# an 8 MiB ceiling is ample while protecting against a pathologically huge body.
+_MAX_BODY_BYTES = 8 * 1024 * 1024
+
 
 def apply_auth(argv: list[str], target) -> list[str]:
     """Splice session/auth into a curl argv, right after 'curl'.
@@ -355,7 +360,12 @@ class Oracle:
                 conn = self._get_conn(force_new=(attempt == 2))
                 conn.request(method, target, body=body, headers=headers)
                 r = conn.getresponse()
-                raw = r.read()                 # must drain so the connection can be reused
+                raw = r.read(_MAX_BODY_BYTES + 1)   # bounded read (memory safety)
+                if len(raw) > _MAX_BODY_BYTES:
+                    # oversized body: keep the ceiling and drop the connection rather
+                    # than drain megabytes just to preserve keep-alive.
+                    raw = raw[:_MAX_BODY_BYTES]
+                    self._close_conn()
                 code = str(r.status)
                 text = raw.decode("utf-8", "replace")
                 return Response(self._classify(code, text), code, len(raw),
@@ -416,13 +426,15 @@ class Oracle:
         batch in parallel. `delay` throttles per-request (applied before each send).
 
         concurrency<=1 routes every send through `self.send()` — the same path
-        a sequential caller would use — so it gets canary ban-detection and
-        DOWN-backoff for free; this is what a large, unattended, log-collection
-        run over a full corpus should use. concurrency>1 uses a raw parallel
-        path with NEITHER (no stable request ordering under concurrency makes a
-        canary re-probe meaningless, and backoff would serialize the pool
-        anyway) — a deliberate tradeoff: pick concurrency=1 when ban detection
-        matters more than throughput, concurrency>1 when it doesn't.
+        a sequential caller would use — so it gets real-time canary ban-detection
+        and DOWN-backoff; this is what a large, unattended, log-collection run over
+        a full corpus should use. concurrency>1 uses a raw parallel path with no
+        per-request backoff (that would serialize the pool) and no per-request
+        canary (request ordering isn't stable under concurrency); instead, if a
+        `canary_payload` is configured, it is re-probed ONCE after the batch so
+        `self.ban_suspected` is still meaningful afterward (post-hoc, not real-time)
+        — a caller can check it and discard/redo a batch that finished while banned.
+        Pick concurrency=1 when real-time ban detection matters more than throughput.
         """
         import concurrent.futures as _cf
         import time as _time
@@ -442,7 +454,15 @@ class Oracle:
             self.requests += 1
             return self._apply_calibration(self._sender(p))
         with _cf.ThreadPoolExecutor(max_workers=concurrency) as ex:
-            return list(ex.map(one, payloads))
+            results = list(ex.map(one, payloads))
+
+        # post-batch ban check: concurrency can't do a per-request canary, but one
+        # probe after the batch still catches "the source got banned during this run".
+        if self.canary_payload is not None and payloads:
+            self.requests += 1
+            canary_resp = self._apply_calibration(self._sender(self.canary_payload))
+            self.ban_suspected = (canary_resp.verdict == BLOCKED)
+        return results
 
     @staticmethod
     def score(resp: Response, baseline: Response) -> float:

@@ -204,6 +204,11 @@ def cmd_eval(args) -> int:
         f"inject={target.inject} {target.path}  concurrency={args.concurrency}"))
     print(ui.rule())
 
+    if args.concurrency > 1 and not args.mock:
+        print(ui.warn(f"concurrency={args.concurrency}: real-time ban detection is off (the canary "
+                      "runs only at --concurrency 1). Benign is measured first so FP stays valid, but "
+                      "a ban during the attack phase could inflate coverage — use --concurrency 1 for an "
+                      "unattended full-corpus run."))
     res = run_eval(target, cases, benign=benign, calibration=calibration, sender=sender,
                    concurrency=args.concurrency, delay=args.delay, transport=args.transport)
 
@@ -316,6 +321,9 @@ def cmd_dataset(args) -> int:
                       "class can't learn a boundary — add a benign set (from an UN-banned source)."))
     print(ui.rule())
 
+    if args.concurrency > 1 and not args.canary and not args.mock:
+        print(ui.warn(f"concurrency={args.concurrency} with no --canary: ban detection is off. "
+                      "Pass --canary <benign> (post-batch check at concurrency>1) or use --concurrency 1."))
     out = build_dataset(target, cases, benign=benign, calibration=calibration, sender=sender,
                         concurrency=args.concurrency, delay=args.delay, transport=args.transport,
                         canary_payload=args.canary or None, canary_every=args.canary_every)
