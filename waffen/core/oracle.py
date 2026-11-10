@@ -73,6 +73,12 @@ _DOWN_CODES = {"", "000", "502", "503", "504"}
 # an 8 MiB ceiling is ample while protecting against a pathologically huge body.
 _MAX_BODY_BYTES = 8 * 1024 * 1024
 
+# Below this calibration confidence, the learned block/pass model is too unreliable
+# to override the signature-based verdict (a low-confidence model misclassifies
+# benign as blocked -> false-positive inflation). Single source of truth shared by
+# the Oracle and the eval/dataset classifiers.
+MIN_CALIBRATION_CONFIDENCE = 0.5
+
 
 def apply_auth(argv: list[str], target) -> list[str]:
     """Splice session/auth into a curl argv, right after 'curl'.
@@ -172,10 +178,18 @@ class Oracle:
                 pass
 
     _CAL_MAP = {"block": BLOCKED, "pass": THROUGH, "unresolved": BLOCKED}
+    #: Below this calibration confidence, the learned block/pass model is too
+    #: unreliable to override the signature-based verdict. Without this gate a
+    #: low-confidence calibration (e.g. 0.4 against open-appsec, whose block/benign
+    #: size bands overlap) classifies benign responses as "unresolved" -> BLOCKED,
+    #: producing a 100%-false-positive artifact. When confidence is low we keep the
+    #: naive signature verdict instead (and a --block-signature still works).
+    _MIN_CAL_CONFIDENCE = MIN_CALIBRATION_CONFIDENCE
 
     def _apply_calibration(self, resp: "Response") -> "Response":
         cal = self.calibration
-        if cal is not None and getattr(cal, "waf_detected", False):
+        if (cal is not None and getattr(cal, "waf_detected", False)
+                and getattr(cal, "confidence", 0.0) >= self._MIN_CAL_CONFIDENCE):
             try:
                 resp.verdict = self._CAL_MAP.get(cal.classify(resp), resp.verdict)
             except Exception:

@@ -31,7 +31,7 @@ import json
 import random
 from collections import Counter
 
-from ..core.oracle import Oracle, Target
+from ..core.oracle import Oracle, Target, MIN_CALIBRATION_CONFIDENCE
 
 _VERDICT_MAP = {"BLOCKED": "block", "THROUGH": "pass", "DOWN": "down"}
 
@@ -41,7 +41,8 @@ FIELDS = ["text", "label", "attack_class", "verdict", "http_code",
 
 def _classify(resp, calibration) -> str:
     """Map a Response to block|pass|unresolved|down, preferring calibration."""
-    if calibration is not None and getattr(calibration, "waf_detected", False):
+    if (calibration is not None and getattr(calibration, "waf_detected", False)
+            and getattr(calibration, "confidence", 0.0) >= MIN_CALIBRATION_CONFIDENCE):
         try:
             return calibration.classify(resp)
         except Exception:

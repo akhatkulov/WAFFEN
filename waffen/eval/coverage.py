@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..core.oracle import Oracle, Target
+from ..core.oracle import Oracle, Target, MIN_CALIBRATION_CONFIDENCE
 
 
 # GoTestWAF-style split: API-security classes vs classic application-security classes.
@@ -103,7 +103,8 @@ class EvalResult:
 
 
 def _classify(resp, calibration):
-    if calibration is not None and getattr(calibration, "waf_detected", False):
+    if (calibration is not None and getattr(calibration, "waf_detected", False)
+            and getattr(calibration, "confidence", 0.0) >= MIN_CALIBRATION_CONFIDENCE):
         try:
             return calibration.classify(resp)  # block|pass|unresolved
         except Exception:
