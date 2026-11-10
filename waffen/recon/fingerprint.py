@@ -351,6 +351,535 @@ SIGNATURES: list[dict] = [
         "cookie": [],
         "body": [],
     },
+    # =======================================================================
+    # Second expansion block — signature DATA ported from wafw00f's plugin
+    # set (github.com/EnableSecurity/wafw00f, BSD 3-Clause licensed), the de
+    # facto reference WAF-fingerprinting tool. Each wafw00f plugin's
+    # matchHeader()/matchCookie()/matchContent() rules are translated into
+    # WAFFEN's regex shape (header blob = "Name: value" lines matched with
+    # re.M; cookie = Set-Cookie value; body = response text) and the grounding
+    # plugin filename is noted inline on every entry. As in the block above,
+    # patterns are kept strictly vendor-SPECIFIC — a unique Server token, a
+    # vendor cookie name, a branded block-page string or vendor domain — and
+    # avoid generic "403"/"access denied"/"forbidden" text that would mislabel
+    # an unrelated origin. Where a wafw00f plugin required several *generic*
+    # phrases together (AND logic), only its single vendor-identifying token is
+    # ported here, so the OR-any scoring below cannot false-positive on a
+    # generic phrase.
+    # =======================================================================
+    {
+        # wafw00f aesecure.py
+        "name": "aeSecure",
+        "header": [r"^aesecure-code:"],
+        "cookie": [],
+        "body": [r"aesecure_denied\.png"],
+    },
+    {
+        # wafw00f anubis.py (Techaro's bot-wall / proof-of-work challenge)
+        "name": "Anubis (Techaro)",
+        "header": [],
+        "cookie": [r"-anubis-auth="],
+        "body": [r"/\.within\.website/x/cmd/anubis/", r'<script id="anubis_(version|challenge)"',
+                 r"github\.com/techarohq/anubis"],
+    },
+    {
+        # wafw00f armor.py
+        "name": "Armor Defense",
+        "header": [],
+        "cookie": [],
+        "body": [r"blocked by website protection from armor", r"please create an armor support ticket"],
+    },
+    {
+        # wafw00f aspa.py
+        "name": "ASPA Firewall",
+        "header": [r"^server:\s*aspa[\-_]?waf", r"^aspa-cache-status:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f astra.py (Czar Securities)
+        "name": "Astra",
+        "header": [],
+        "cookie": [r"cz_astra_csrf_cookie"],
+        "body": [r"astrawebsecurity\.freshdesk\.com", r"www\.getastra\.com/assets/images"],
+    },
+    {
+        # wafw00f azion.py
+        "name": "Azion Edge Firewall",
+        "header": [r"^x-azion-edge-pop:", r"^x-azion-request-id:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f baffinbay.py (Baffin Bay Networks, acquired by Mastercard)
+        "name": "Baffin Bay",
+        "header": [r"^server:\s*baffin-bay-inlet"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f bekchy.py
+        "name": "Bekchy",
+        "header": [],
+        "cookie": [],
+        "body": [r"bekchy.{0,10}?access denied", r"bekchy\.com/report"],
+    },
+    {
+        # wafw00f bitninja.py
+        "name": "BitNinja",
+        "header": [],
+        "cookie": [],
+        "body": [r"security check by bitninja", r"visitor anti-robot validation"],
+    },
+    {
+        # wafw00f bulletproof.py (BulletProof Security Pro, AITpro) — `bpsMessage`
+        # is its unique block-page token; the generic 403 strings are dropped.
+        "name": "BulletProof Security",
+        "header": [],
+        "cookie": [],
+        "body": [r"\+?bpsmessage", r"if you arrived here due to a search"],
+    },
+    {
+        # wafw00f cachewall.py — keyed on the Cachewall-specific headers/strings
+        # (its Varnish/X-Varnish signals are too generic and are dropped).
+        "name": "CacheWall",
+        "header": [r"^x-cachewall-action:", r"^x-cachewall-reason:"],
+        "cookie": [],
+        "body": [r"security by cachewall", r"403 naughty.{0,10}?not nice!"],
+    },
+    {
+        # wafw00f chuangyu.py (Yunaq Chuang Yu Shield)
+        "name": "Chuang Yu Shield (Yunaq)",
+        "header": [],
+        "cookie": [],
+        "body": [r"www\.365cyd\.com", r"help\.365cyd\.com/cyd[\-_]error[\-_]help"],
+    },
+    {
+        # wafw00f ciscoacexml.py
+        "name": "Cisco ACE XML Gateway",
+        "header": [r"^server:\s*ace xml gateway"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f cloudfloordns.py
+        "name": "CloudfloorDNS",
+        "header": [r"^server:\s*cloudfloordns"],
+        "cookie": [],
+        "body": [r"cloudfloordns.{0,6}?web application firewall error", r"www\.cloudfloordns\.com/contact"],
+    },
+    {
+        # wafw00f cloudfront.py (Amazon CloudFront edge — commonly fronts AWS WAF)
+        "name": "Amazon Cloudfront",
+        "header": [r"^server:\s*cloudfront", r"^via:.*\.cloudfront\.net \(cloudfront\)",
+                   r"^x-cache:\s*error from cloudfront"],
+        "cookie": [],
+        "body": [r"generated by cloudfront \(cloudfront\)"],
+    },
+    {
+        # wafw00f cloudprotector.py (Rohde & Schwarz Cybersecurity)
+        "name": "Cloud Protector (Rohde & Schwarz)",
+        "header": [],
+        "cookie": [],
+        "body": [r"cloud protector.{0,20}?by rohde.{3,8}?schwarz cybersecurity", r"cloudprotector\.com"],
+    },
+    {
+        # wafw00f crawlprotect.py
+        "name": "CrawlProtect",
+        "header": [],
+        "cookie": [r"crawlprotecttag="],
+        "body": [r"<title>crawlprotect", r"this site is protected by crawlprotect"],
+    },
+    {
+        # wafw00f ddosguard.py
+        "name": "DDoS-GUARD",
+        "header": [r"^server:\s*ddos-guard"],
+        "cookie": [r"__ddg[0-9]", r"__ddgid", r"__ddgmark"],
+        "body": [],
+    },
+    {
+        # wafw00f dosarrest.py
+        "name": "DOSarrest",
+        "header": [r"^x-dis-request-id:", r"^server:\s*dosarrest"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f eisoo.py (Eisoo Cloud Firewall)
+        "name": "Eisoo Cloud Firewall",
+        "header": [r"^server:\s*eisoowaf"],
+        "cookie": [],
+        "body": [r"eisoo[\-_]firewall[\-_]block\.css", r"www\.eisoo\.com"],
+    },
+    {
+        # wafw00f f5bigipapm.py (F5 BIG-IP Access Policy Manager — distinct from
+        # the BIG-IP ASM WAF above; these are its APM session cookies).
+        "name": "F5 BIG-IP APM",
+        "header": [],
+        "cookie": [r"lastmrh_session", r"mrhsession", r"f5_fullwt", r"f5_ht_shrinked"],
+        "body": [],
+    },
+    {
+        # wafw00f f5trafficshield.py (F5's legacy Trafficshield WAF)
+        "name": "F5 Trafficshield",
+        "header": [r"^server:\s*f5-trafficshield"],
+        "cookie": [r"asinfo="],
+        "body": [],
+    },
+    {
+        # wafw00f fastly.py (Fastly edge — hosts Fastly Next-Gen WAF/Signal Sciences)
+        "name": "Fastly",
+        "header": [r"^x-fastly-request-id:", r"^x-served-by:\s*cache-[a-z]{3}\d+-[a-z]{3}"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f fortigate.py (Fortinet FortiGate NGFW — distinct from FortiWeb above)
+        "name": "FortiGate (Fortinet)",
+        "header": [],
+        "cookie": [],
+        "body": [r"//globalurl\.fortinet\.net", r"fortigate application control"],
+    },
+    {
+        # wafw00f fortiguard.py (Fortinet FortiGuard)
+        "name": "FortiGuard (Fortinet)",
+        "header": [],
+        "cookie": [],
+        "body": [r"fortiguard intrusion prevention"],
+    },
+    {
+        # wafw00f godaddy.py
+        "name": "GoDaddy Website Protection",
+        "header": [],
+        "cookie": [],
+        "body": [r"godaddy (security|website firewall)"],
+    },
+    {
+        # wafw00f greywizard.py
+        "name": "Greywizard",
+        "header": [r"^server:\s*greywizard"],
+        "cookie": [],
+        "body": [r"<(title|h\d)>grey wizard", r"contact the website owner or grey wizard"],
+    },
+    {
+        # wafw00f huaweicloud.py (Huawei Cloud WAF)
+        "name": "Huawei Cloud Firewall",
+        "header": [r"^server:\s*huaweicloudwaf"],
+        "cookie": [r"hwwafsesid"],
+        "body": [r"hwclouds\.com", r"hws_security@"],
+    },
+    {
+        # wafw00f imunify360.py (CloudLinux Imunify360 — common on cPanel hosts)
+        "name": "Imunify360",
+        "header": [r"^server:\s*imunify360"],
+        "cookie": [],
+        "body": [r"(protected|powered).by.{0,10}?imunify360", r"imunify360.preloader"],
+    },
+    {
+        # wafw00f indusguard.py (Indusface)
+        "name": "IndusGuard (Indusface)",
+        "header": [r"^server:\s*if_waf"],
+        "cookie": [],
+        "body": [r"this website is secured against online attacks\. your request was blocked"],
+    },
+    {
+        # wafw00f instartdx.py — keyed on the X-Instart-* headers (independent
+        # OR-schemes); the generic "requested url was rejected" body is dropped.
+        "name": "Instart DX",
+        "header": [r"^x-instart-request-id:", r"^x-instart-cache:", r"^x-instart-wl:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f janusec.py
+        "name": "Janusec",
+        "header": [],
+        "cookie": [],
+        "body": [r"janusec application gateway"],
+    },
+    {
+        # wafw00f kemp.py (Progress Kemp LoadMaster) — X-ServedBy: KEMP-LM header
+        "name": "Kemp LoadMaster",
+        "header": [r"^x-servedby:\s*kemp-lm"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f knownsec.py (KS-WAF)
+        "name": "KS-WAF (KnownSec)",
+        "header": [],
+        "cookie": [],
+        "body": [r"/ks[\-_]waf[\-_]error\.png"],
+    },
+    {
+        # wafw00f link11.py (Link11 WAAP)
+        "name": "Link11",
+        "header": [r"^server:\s*rhino-core-shield"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f malcare.py
+        "name": "Malcare",
+        "header": [],
+        "cookie": [],
+        "body": [r"powered.by.{0,15}?malcare"],
+    },
+    {
+        # wafw00f nemesida.py (PentestIt Nemesida WAF)
+        "name": "Nemesida",
+        "header": [],
+        "cookie": [],
+        "body": [r"nemesida(\-security)?\.com",
+                 r"suspicious activity detected.{0,10}?access to the site is blocked", r"nwaf@"],
+    },
+    {
+        # wafw00f newdefend.py
+        "name": "Newdefend",
+        "header": [r"^server:\s*newdefend"],
+        "cookie": [],
+        "body": [r"www\.newdefend\.com/feedback", r"/nd[\-_]block/"],
+    },
+    {
+        # wafw00f nexusguard.py
+        "name": "NexusGuard",
+        "header": [],
+        "cookie": [],
+        "body": [r"powered by nexusguard", r"nexusguard\.com/wafpage/"],
+    },
+    {
+        # wafw00f ninja.py (NinjaFirewall, NinTechNet)
+        "name": "NinjaFirewall",
+        "header": [],
+        "cookie": [],
+        "body": [r"<title>ninjafirewall", r"for security reasons?.{0,10}?it was blocked and logged"],
+    },
+    {
+        # wafw00f onmessage.py (Blackbaud onMessage Shield — "SHEILD" typo is the
+        # literal observed block-page string wafw00f matches).
+        "name": "OnMessage Shield (Blackbaud)",
+        "header": [r"^x-engine:\s*onmessage shield"],
+        "cookie": [],
+        "body": [r"onmessage sheild", r"maintenance\.blackbaud\.com"],
+    },
+    {
+        # wafw00f oraclecloud.py (Oracle Cloud WAF)
+        "name": "Oracle Cloud",
+        "header": [],
+        "cookie": [],
+        "body": [r"<title>fw_error_www", r"oracleimg\.com/us/assets/metrics/ora_ocom\.js"],
+    },
+    {
+        # wafw00f panyun360.py (360 PanYun)
+        "name": "360PanYun",
+        "header": [r"^server:\s*panyun", r"^x-panyun-(request-id|error-reason|error-step):"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f webray.py (WebRay RayWAF)
+        "name": "RayWAF (WebRay)",
+        "header": [r"^server:\s*webray[\-_]waf", r"^drivedby:\s*raysrv\.rayeng"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f rvmode.py (Microsoft ASP.NET request validation filter)
+        "name": "ASP.NET RequestValidationMode",
+        "header": [],
+        "cookie": [],
+        "body": [r"request validation has detected a potentially dangerous client input",
+                 r"httprequestvalidationexception"],
+    },
+    {
+        # wafw00f rsfirewall.py (RSJoomla! RSFirewall)
+        "name": "RSFirewall (Joomla)",
+        "header": [],
+        "cookie": [],
+        "body": [r"com_rsfirewall_"],
+    },
+    {
+        # wafw00f sabre.py — dxsupport.sabre.com is its unique token (the generic
+        # "Application Firewall Error" body is dropped).
+        "name": "Sabre Firewall",
+        "header": [],
+        "cookie": [],
+        "body": [r"dxsupport\.sabre\.com"],
+    },
+    {
+        # wafw00f safe3.py (Safe3 Web Application Firewall)
+        "name": "Safe3 Web Firewall",
+        "header": [r"^server:\s*safe3 web firewall", r"^x-powered-by:\s*safe3waf"],
+        "cookie": [],
+        "body": [r"safe3waf/[0-9\.]+"],
+    },
+    {
+        # wafw00f safedog.py (SafeDog) — "broswer" typo is the literal source string
+        "name": "Safedog",
+        "header": [r"^server:\s*safedog"],
+        "cookie": [r"safedog[\-_]flow[\-_]item"],
+        "body": [r"safedogsite/broswer_logo\.jpg", r"404\.safedog\.cn"],
+    },
+    {
+        # wafw00f safeline.py (Chaitin SafeLine WAF)
+        "name": "SafeLine (Chaitin)",
+        "header": [],
+        "cookie": [],
+        "body": [r"\bsafeline\b", r"<!\-\-\s?event id:"],
+    },
+    {
+        # wafw00f scutum.py (Secure Sky Scutum)
+        "name": "Scutum",
+        "header": [r"^server:\s*scutum"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f secupress.py (SecuPress WP Security)
+        "name": "SecuPress",
+        "header": [],
+        "cookie": [],
+        "body": [r"<(title|h\d)>secupress"],
+    },
+    {
+        # wafw00f senginx.py (Neusoft SEnginx)
+        "name": "SEnginx (Neusoft)",
+        "header": [],
+        "cookie": [],
+        "body": [r"senginx[\-_]robot[\-_]mitigation"],
+    },
+    {
+        # wafw00f shieldsecurity.py (Shield Security for WordPress)
+        "name": "Shield Security",
+        "header": [],
+        "cookie": [],
+        "body": [r"you were blocked by the shield", r"remaining transgression\(s\) against this site"],
+    },
+    {
+        # wafw00f shieldon.py — keyed on the X-Protected-By header (independent
+        # OR-scheme); the generic CAPTCHA/"Access denied" body strings are dropped.
+        "name": "Shieldon Firewall",
+        "header": [r"^x-protected-by:\s*shieldon\.io"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f sitelock.py (SiteLock TrueShield)
+        "name": "Sitelock",
+        "header": [],
+        "cookie": [],
+        "body": [r"sitelock will remember you", r"sitelock[_\-]shield([_\-]logo|[\-_]badge)?",
+                 r"sitelock incident id"],
+    },
+    {
+        # wafw00f stackpath.py — only the StackPath-branded block strings are used
+        # (the generic "security service" sentence is its AND-only path, dropped).
+        "name": "StackPath",
+        "header": [],
+        "cookie": [],
+        "body": [r"<title>stackpath[^<]+</title>", r'protected by <a href="https?://(?:www\.)?stackpath\.com/"[^>]+>stackpath'],
+    },
+    {
+        # wafw00f tencent.py + qcloud.py (Tencent Cloud WAF; same vendor)
+        "name": "Tencent Cloud WAF",
+        "header": [],
+        "cookie": [],
+        "body": [r"waf\.tencent[\-_]?cloud\.com/", r"腾讯云web应用防火墙"],
+    },
+    {
+        # wafw00f threatx.py (A10/ThreatX) — the 32-hex incident id is the
+        # vendor-specific signal (its bare X-Request-Id header is too generic).
+        "name": "ThreatX (A10)",
+        "header": [],
+        "cookie": [],
+        "body": [r"forbidden - id: [a-f0-9]{32}"],
+    },
+    {
+        # wafw00f transip.py
+        "name": "TransIP Web Firewall",
+        "header": [r"^x-transip-backend:", r"^x-transip-balancer:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f uewaf.py (UCloud UEWaf)
+        "name": "UEWaf (UCloud)",
+        "header": [r"^server:\s*uewaf"],
+        "cookie": [],
+        "body": [r"/uewaf_deny_pages/", r"ucloud\.cn"],
+    },
+    {
+        # wafw00f variti.py
+        "name": "Variti",
+        "header": [r"^server:\s*variti"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f viettel.py (Viettel Cloudrity WAF)
+        "name": "Viettel (Cloudrity)",
+        "header": [],
+        "cookie": [],
+        "body": [r"access denied.{0,10}?viettel waf", r"cloudrity\.com", r"viettel waf system"],
+    },
+    {
+        # wafw00f virusdie.py
+        "name": "VirusDie",
+        "header": [],
+        "cookie": [],
+        "body": [r"cdn\.virusdie\.ru/splash/firewallstop\.png", r"copy.{0,10}?virusdie\.ru"],
+    },
+    {
+        # wafw00f webarx.py (WebARX / Patchstack)
+        "name": "WebARX",
+        "header": [],
+        "cookie": [],
+        "body": [r"webarx.{0,10}?web application firewall", r"www\.webarxsecurity\.com",
+                 r"/wp-content/plugins/webarx/"],
+    },
+    {
+        # wafw00f webseal.py (IBM Security Access Manager WebSEAL)
+        "name": "WebSEAL (IBM)",
+        "header": [r"^server:\s*webseal"],
+        "cookie": [],
+        "body": [r"this is a webseal error message template", r"webseal server received an invalid http request"],
+    },
+    {
+        # wafw00f webtotem.py
+        "name": "WebTotem",
+        "header": [],
+        "cookie": [],
+        "body": [r"the current request was blocked.{0,8}?>webtotem"],
+    },
+    {
+        # wafw00f wts.py (WTS-WAF)
+        "name": "WTS-WAF",
+        "header": [r"^server:\s*wts/[0-9\.]"],
+        "cookie": [],
+        "body": [r"<(title|h\d)>wts[\-_]waf"],
+    },
+    {
+        # wafw00f xlabssecuritywaf.py
+        "name": "XLabs Security WAF",
+        "header": [r"^x-cdn:\s*xlabs security", r"^secured:\s*by xlabs security", r"^server:\s*xlabs[\-_]?.?waf"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        # wafw00f xuanwudun.py (DBAppSecurity Xuanwudun) — admin.dbappwaf.cn is
+        # its unique token (the loose "class=...waf..." match is dropped).
+        "name": "Xuanwudun",
+        "header": [],
+        "cookie": [],
+        "body": [r"admin\.dbappwaf\.cn"],
+    },
+    {
+        # wafw00f yxlink.py (Yxlink WAF)
+        "name": "YXLink",
+        "header": [r"^server:\s*yxlink"],
+        "cookie": [r"yx_ci_session=", r"yx_language="],
+        "body": [],
+    },
 ]
 
 
