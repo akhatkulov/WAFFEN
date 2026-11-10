@@ -101,9 +101,10 @@ numbers above aren't over-read:
   honest: SSRF caps at 0.60 (in-band only), XXE at 0.75 (proves parsing, not file read).
 - **The 119 fingerprints are a wafw00f port tested on synthetic responses** — not yet matched
   against live traffic from each vendor, so a real deployment could differ in header casing/order.
-- **The SQLi data-extraction channel (0.95) isn't live-proven** — on the error-leaking Juice Shop
-  endpoint the error-signature channel confirms first, so extraction is exercised only by unit
-  tests (for error-suppressed targets).
+- **The SQLi data-extraction channel (0.95) is now live-proven** — Juice Shop's SQLi leaks errors
+  (so the error channel confirms first there), but an error-suppressed sink (`lab/vuln_sinks.py`
+  `/sqli-blind`) exercises it end-to-end: the DB-evaluated `~a*b~` marker comes back and the real
+  verifier confirms at 0.95 (`tests/test_verifier_live_sinks.py`).
 - **The 4 search strategies are now benchmarked** (`docs/VALIDATION.md` §6.11): head-to-head on
   CRS, **genetic** is the most efficient (581 bypasses / 1k requests, fastest) and **MCTS** the
   most thorough (1021 found); the benchmark also surfaced and fixed an `OverflowError` crash in

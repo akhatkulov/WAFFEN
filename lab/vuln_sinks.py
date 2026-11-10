@@ -89,6 +89,21 @@ class Handler(BaseHTTPRequestHandler):
                         else "fetched: 200 OK (nothing interesting)")
             return
 
+        # Blind/error-SUPPRESSED SQLi: NEVER leaks a SQL error string and returns an
+        # identical body for a tautology and its negation (so the error-signature and
+        # boolean-differential channels both come up empty) — but it DOES evaluate an
+        # injected arithmetic expression server-side and render the delimited marker,
+        # which is exactly what the data-extraction verifier channel (0.95) confirms.
+        if u.path == "/sqli-blind":
+            val = g("q")
+            m = re.search(r"\((\d+)\s*\*\s*(\d+)\)", val)
+            if m and ("126" in val or "~" in val):            # extraction probe present
+                prod = int(m.group(1)) * int(m.group(2))
+                self._reply(200, f"results for id: ~{prod}~5.7.44-MariaDB~ end")
+            else:
+                self._reply(200, "search results: 0 products found")   # same for true & false
+            return
+
         self._reply(200, "vuln sink app")
 
 

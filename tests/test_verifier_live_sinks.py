@@ -49,6 +49,17 @@ def test_verifier_confirms_against_a_live_vulnerable_sink(sink_url, cls, cfg, pa
     assert v.attack_class == cls
 
 
+def test_sqli_data_extraction_confirms_against_error_suppressed_sink(sink_url):
+    # /sqli-blind leaks no SQL error and returns identical bodies for a tautology and its
+    # negation, so the error-signature and boolean channels fail; only the data-extraction
+    # channel (the DB-evaluated ~a*b~ marker) can confirm it — proving that 0.95 path live.
+    t = Target(base_url=sink_url, inject="query", path="/sqli-blind", param="q")
+    v = verify(Oracle(t), "' OR 1=1-- -", "SQL Injection")
+    assert v.exploitable is True, v.reason
+    assert v.confidence >= 0.9                       # the data-extraction channel (0.95)
+    assert "~" in v.reason and "EXTRACTION" in v.reason.upper()
+
+
 def test_verifier_rejects_a_non_vulnerable_sink(sink_url):
     # a benign path that never emits the expected signal -> no false positive
     t = Target(base_url=sink_url, inject="query", path="/ssi", param="q")
