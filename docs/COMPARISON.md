@@ -80,8 +80,32 @@ ModSecurity** lab, and **BunkerWeb** (a distinct WAF product) ([`lab/`](../lab))
 - **A large standardized scoring corpus** → **GoTestWAF** ships one; WAFFEN's KB (181 seeds
   across 14 classes, up from 47) feeds the *search*, and it can harvest PayloadsAllTheThings,
   but that isn't a single curated-for-scoring corpus.
-- **Scale of validation** → proven on **3** independent WAFs so far (RedEye + OWASP CRS +
-  BunkerWeb), not dozens; transport is curl/http.client (no HTTP/2, no headless browser).
+- **Scale of validation** → proven on **3** WAFs so far (RedEye + OWASP CRS + BunkerWeb), not
+  dozens — and all three are **regex/CRS-family** (BunkerWeb bundles CRS); a genuinely different
+  detection model (ML/semantic like SafeLine, or whitelist like NAXSI) is **not yet validated**.
+  Transport is curl/http.client (no HTTP/2, no headless browser).
+
+## Known limitations surfaced by self-audit (honest)
+
+Beyond the head-to-head gaps above, a critical self-audit found these — stated plainly so the
+numbers above aren't over-read:
+
+- **5 of the 14 verifier classes are unit-tested only.** XXE, SSRF, LDAP, SSI and Open Redirect
+  verifiers are validated against *fake oracles*, never a live vulnerable sink — the lab's Juice
+  Shop hardens (e.g. `/redirect` → 406) or lacks those sinks. Treat their verdicts as sound
+  *heuristics* pending field testing; the 9 original classes (XSS/SQL/Cmd/Traversal/LFI/SSTI/
+  CRLF/NoSQL/Upload) are exercised end-to-end.
+- **The 119 fingerprints are a wafw00f port tested on synthetic responses** — not yet matched
+  against live traffic from each vendor, so a real deployment could differ in header casing/order.
+- **The SQLi data-extraction channel (0.95) isn't live-proven** — on the error-leaking Juice Shop
+  endpoint the error-signature channel confirms first, so extraction is exercised only by unit
+  tests (for error-suppressed targets).
+- **The 4 search strategies aren't benchmarked against each other.** Beam is the proven default;
+  genetic / MCTS / best-first exist but their comparative edge is unquantified.
+- **The self-updating KB ships no sources** (`kb-update`): the mechanism is real but there is no
+  public WAFFEN KB yet, so auto-update is roadmap, not a working feature today.
+- **Ban detection is real-time only at `--concurrency 1`.** Above that it is a single post-batch
+  probe (added after the audit); unattended full-corpus runs should still prefer `--concurrency 1`.
 
 ## Bottom line
 

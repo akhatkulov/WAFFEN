@@ -53,6 +53,11 @@ plus the fixes and features that cross-WAF validation surfaced.
   **verified** SQLi bypasses of CRS paranoia-level-1, confirmed by the live DB error.
 
 ### Fixed
+- **Robustness (self-audit)**: concurrent batches now run a post-batch canary probe so
+  ban detection isn't blind above `--concurrency 1` (and `eval`/`dataset` warn); the
+  deep-SQLi UNION walk is bounded by `_UNION_MAX_COLS=6`; the pooled transport caps the
+  body read at 8 MiB and drops an oversized connection instead of draining it. The audit's
+  honest findings are documented in `docs/COMPARISON.md` ("Known limitations").
 - **Verifier false negatives**: verification probes now retry on a transient `DOWN`
   (a flaky transport no longer reads as "exploit not confirmed"); the CRLF verifier's
   own `curl -i` header path now carries `--header`/`--cookie` too.
