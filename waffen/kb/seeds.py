@@ -207,9 +207,46 @@ SEEDS: dict[str, list[str]] = {
 }
 
 
+def _load_kb_overlay() -> int:
+    """Merge extra seeds from an on-disk KB directory into SEEDS — the consumer the
+    auto-updating KB was missing. `kb-update` downloads a bundle of per-class seed
+    files; this makes `seeds_for()` actually pick them up without a code change, so the
+    built-in bootstrap set can be EXTENDED at runtime. Each `<dir>/<Attack Class>.txt`
+    holds one payload per line (`#` comments and blanks ignored). The directory is
+    `$WAFFEN_KB_DIR`, else `./waffen_kb/seeds` if it exists. Returns payloads added.
+    Safe to call repeatedly (dedupes) and never raises."""
+    import os
+    from pathlib import Path
+    base = os.environ.get("WAFFEN_KB_DIR") or "waffen_kb/seeds"
+    d = Path(base)
+    if not d.is_dir():
+        return 0
+    added = 0
+    for f in sorted(d.glob("*.txt")):
+        try:
+            lines = f.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        payloads = [s.strip() for s in lines if s.strip() and not s.lstrip().startswith("#")]
+        if not payloads:
+            continue
+        bucket = SEEDS.setdefault(f.stem, [])
+        seen = set(bucket)
+        for p in payloads:
+            if p not in seen:
+                bucket.append(p)
+                seen.add(p)
+                added += 1
+    return added
+
+
 def classes() -> list[str]:
     return list(SEEDS.keys())
 
 
 def seeds_for(attack_class: str) -> list[str]:
     return SEEDS.get(attack_class, [])
+
+
+# Fold in any downloaded/updated KB seeds at import time (no-op when none present).
+_load_kb_overlay()
