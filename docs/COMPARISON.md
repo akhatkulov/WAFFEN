@@ -19,11 +19,11 @@ Compared against the tools people actually reach for in this space. ✅ strong �
 
 | Capability | **WAFFEN** | wafw00f | GoTestWAF | sqlmap |
 |---|---|---|---|---|
-| Name the WAF vendor | ⚠️ ~9 sigs + behavioral fallback | ✅ **150+ WAF DB (best)** | ❌ | ❌ |
+| Name the WAF vendor | ⚠️ **48** sigs + behavioral fallback | ✅ **150+ WAF DB (best)** | ❌ | ❌ |
 | WAF coverage % scoring | ✅ per-class + overall | ❌ | ✅ **de-facto standard** | ❌ |
 | False-positive (benign) measurement | ✅ **benign-first, ban-safe** | ❌ | ⚠️ measures, but *after* attacks → self-ban artifact | ❌ |
 | Active **guided bypass search** | ✅ **4 strategies** (beam/genetic/bestfirst/mcts) | ❌ | ❌ static corpus only | ⚠️ tamper scripts, SQL-only |
-| **Exploitability verification** | ✅ **9 classes** (not just "got a 200") | ❌ | ❌ | ✅ SQL only (deepest) |
+| **Exploitability verification** | ✅ **14 classes** (not just "got a 200") | ❌ | ❌ | ✅ SQL only (deepest) |
 | Config-tradeoff quantification | ✅ **paranoia gradient** | ❌ | ❌ | ❌ |
 | WAF-rule suggestions from findings | ✅ | ❌ | ❌ | ❌ |
 | SQLi exploitation depth (dump/OOB/blind) | ⚠️ confirms, doesn't dump | ❌ | ❌ | ✅ **best** |
@@ -70,11 +70,13 @@ ModSecurity** lab ([`lab/`](../lab)):
 
 ## Where WAFFEN is **not** the best tool (honest)
 
-- **Vendor identification breadth** → use **wafw00f** (150+ signature DB vs WAFFEN's ~9).
+- **Vendor identification breadth** → **wafw00f** still leads (150+ signature DB vs WAFFEN's
+  48 — up from 9), though WAFFEN's behavioral fallback flags an inline WAF even with no signature.
 - **Actually exploiting a SQLi** (dumping data, OOB, deep blind) → use **sqlmap**.
 - **Broad vulnerability scanning** beyond evasion research → use **Burp Suite / Nuclei**.
-- **A large standardized scoring corpus** → **GoTestWAF** ships one; WAFFEN uses a small KB
-  (it *can* harvest PayloadsAllTheThings, but that corpus isn't curated-for-scoring).
+- **A large standardized scoring corpus** → **GoTestWAF** ships one; WAFFEN's KB (181 seeds
+  across 14 classes, up from 47) feeds the *search*, and it can harvest PayloadsAllTheThings,
+  but that isn't a single curated-for-scoring corpus.
 - **Scale of validation** → proven on **2** WAFs so far (RedEye + CRS), not dozens; transport
   is curl/http.client (no HTTP/2, no headless browser).
 

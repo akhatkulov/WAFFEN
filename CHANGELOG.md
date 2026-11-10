@@ -9,6 +9,14 @@ Validated against a **second, independent WAF** (local OWASP CRS / ModSecurity),
 plus the fixes and features that cross-WAF validation surfaced.
 
 ### Added
+- **Much wider coverage** (gaps from `docs/COMPARISON.md`, closed via an independently
+  verified multi-agent pass):
+  - WAF **fingerprint signatures 9 → 48** vendors (Barracuda, FortiWeb, Citrix NetScaler,
+    Palo Alto, Radware, Wallarm, DataDome, PerimeterX, IBM DataPower, Azure App Gateway /
+    Front Door, Aliyun, …) — grounded in wafw00f-known signatures; no false match on the lab.
+  - **KB seeds 47 → 181** across **14 classes** (added CRLF, XXE, SSRF, Open Redirect, LDAP, SSI).
+  - **Verifiers 9 → 14 classes** (+Open Redirect, SSI, LDAP, XXE, SSRF) and **deeper SQLi
+    confirmation** (UNION column-count + time-based blind, on top of error-signature/boolean).
 - **Pooled HTTP transport** (`--transport pooled`): a thread-local keep-alive
   `http.client` connection reused across requests, instead of one curl subprocess
   per request — ~1.6× faster on a localhost run (more on a remote HTTPS target,
