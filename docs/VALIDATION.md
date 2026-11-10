@@ -250,6 +250,24 @@ probe, and the REAL verifier (real curl / `_fetch_headers`) confirms all five en
 `tests/test_verifier_live_sinks.py` makes this permanent (binds the sink, runs the verifier,
 plus a no-false-positive check). All 14 verifier classes are now exercised against a live target.
 
+### 6.11 Search strategies benchmarked (and a crash found)
+The audit noted the 4 strategies were never compared. Running each on the CRS lab (SQL class,
+20 seeds, equal 150-request/run budget, `lab/strategy_bench.py`) gives real numbers:
+
+| Strategy | Distinct bypasses | Requests | Time | Bypasses / 1k req |
+|---|---|---|---|---|
+| beam (default) | 847 | 2851 | 21.3s | 297 |
+| **genetic** | 1015 | 1747 | 14.7s | **581** |
+| best-first | 233 | 461 | 3.9s | 505 |
+| MCTS | 1021 | 2851 | 23.0s | 358 |
+
+**genetic** is the most efficient (most bypasses per request, fewest requests, fastest) and nearly
+the most thorough; **MCTS** finds the most but costs the most; **best-first** converges fast but
+explores least. They genuinely differ — the default (beam) is reasonable, but genetic is the better
+pick under a tight budget. The benchmark also surfaced a real crash — `reward_from_score` raised
+`OverflowError` for a large negative score delta (a small score after a THROUGH parent) — now fixed
+with a numerically-stable sigmoid (`tests/test_bandit.py`).
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline

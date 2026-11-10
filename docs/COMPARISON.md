@@ -103,8 +103,10 @@ numbers above aren't over-read:
 - **The SQLi data-extraction channel (0.95) isn't live-proven** — on the error-leaking Juice Shop
   endpoint the error-signature channel confirms first, so extraction is exercised only by unit
   tests (for error-suppressed targets).
-- **The 4 search strategies aren't benchmarked against each other.** Beam is the proven default;
-  genetic / MCTS / best-first exist but their comparative edge is unquantified.
+- **The 4 search strategies are now benchmarked** (`docs/VALIDATION.md` §6.11): head-to-head on
+  CRS, **genetic** is the most efficient (581 bypasses / 1k requests, fastest) and **MCTS** the
+  most thorough (1021 found); the benchmark also surfaced and fixed an `OverflowError` crash in
+  best-first's bandit reward. Beam remains a solid default; pick genetic for budget-limited runs.
 - **The self-updating KB ships no sources** (`kb-update`): the mechanism is real but there is no
   public WAFFEN KB yet, so auto-update is roadmap, not a working feature today.
 - **Ban detection is real-time only at `--concurrency 1`.** Above that it is a single post-batch
