@@ -60,6 +60,9 @@ that every target-facing subcommand uses):
 | `--timeout N` | `15` | per-request curl timeout (seconds) |
 | `--block-signature TEXT` | `"Request blocked by RedEye"` | body substring marking a WAF block (swap for your own WAF's) |
 | `--tls-verify` | off | enforce TLS cert verification (default is insecure, like every comparable WAF tool, for self-signed test targets) |
+| `--header 'Name: Value'` / `-H` | — | extra request header (repeatable), e.g. `Authorization: Bearer …`; threads through every inject mode and transform so a search can run behind auth |
+| `--cookie 'a=1; b=2'` | — | cookie string sent with every request (session auth) |
+| `--transport MODE` | `curl` | `curl` (uniform; required for request transforms) or `pooled` (keep-alive `http.client`, faster on long runs; falls back to curl for transform sends) |
 | `--mock` | off | run against the built-in offline mock WAF instead of `--target` — no network, safe to experiment with |
 
 Every example below is runnable as shown. Replace `https://your-waf.example` with

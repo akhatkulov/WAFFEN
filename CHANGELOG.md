@@ -9,6 +9,13 @@ Validated against a **second, independent WAF** (local OWASP CRS / ModSecurity),
 plus the fixes and features that cross-WAF validation surfaced.
 
 ### Added
+- **Pooled HTTP transport** (`--transport pooled`): a thread-local keep-alive
+  `http.client` connection reused across requests, instead of one curl subprocess
+  per request — ~1.6× faster on a localhost run (more on a remote HTTPS target,
+  where it also avoids a fresh TLS handshake per request). Covers every built-in
+  inject mode and transparently falls back to curl for `request_transform` sends
+  (transforms emit curl argv). Default stays `curl`; verified to produce identical
+  verdicts/status to curl across all inject modes against the CRS lab.
 - **Session / auth support** (`--header`/`-H`, `--cookie`): threaded through every
   inject mode **and** every request transform via a single `oracle.apply_auth`, so a
   bypass search can run behind a login. An auth cookie folds into a cookie-injection

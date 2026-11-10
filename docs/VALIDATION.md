@@ -201,6 +201,15 @@ traffic**. WAFFEN produced that recommendation by measurement, not assumption.
   curl-argv path too, not only the default path. The single-source `apply_auth` design is
   confirmed live, end-to-end (previously only unit-tested).
 
+### 6.7 Transport parity — pooled vs curl agree
+The new `--transport pooled` (keep-alive `http.client`) was cross-checked against the
+default curl transport on the lab: across every inject mode (query / rawpath / json /
+body) and both benign and attack payloads, the two transports returned the **same status
+and the same verdict** (8/8). A pooled bypass run found the same 3 verified SQLi payloads,
+and a pooled run with a curl-argv transform fell back to curl cleanly. Pooled was ~1.6×
+faster on localhost (≈6.1 vs 10.1 ms/request) — a bigger gap is expected on a remote
+HTTPS target, where keep-alive also removes a per-request TLS handshake.
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
