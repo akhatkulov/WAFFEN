@@ -5,8 +5,10 @@ All notable changes to WAFFEN are documented here. Format loosely follows
 
 ## [Unreleased]
 
-Validated against a **second, independent WAF** (local OWASP CRS / ModSecurity),
-plus the fixes and features that cross-WAF validation surfaced.
+## [0.2.0] — 2026-11-10
+
+Validated across **five WAFs and three detection models** (RedEye, OWASP CRS, BunkerWeb,
+NAXSI, open-appsec), plus the features and fixes that cross-WAF validation surfaced.
 
 ### Added
 - **Weak sides strengthened** (the honest gaps in `docs/COMPARISON.md`, each verified

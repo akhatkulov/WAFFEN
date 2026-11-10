@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "waffen"
-version = "0.1.0"
+version = "0.2.0"
 description = "WAF evaluation / bypass-research toolkit for authorized targets"
 readme = "README.md"
 requires-python = ">=3.10"
