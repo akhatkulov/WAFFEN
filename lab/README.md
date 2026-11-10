@@ -37,10 +37,23 @@ the verifier confirms via a live `SQLITE_ERROR` is a real, error-based bypass �
 `docs/VALIDATION.md` §6 for the recorded results (3 distinct verified SQLi evasions
 of CRS paranoia-level-1).
 
+## A 3rd WAF — BunkerWeb
+
+`bunkerweb-compose.yml` puts **BunkerWeb** (a distinct WAF product) in front of the same
+Juice Shop on `:18081`, so WAFFEN can be validated beyond CRS:
+
+```sh
+docker compose -p waffen-lab up -d                          # creates the network first
+docker compose -f bunkerweb-compose.yml -p waffen-lab-bw up -d
+waffen eval --target http://localhost:18081 --path /rest/products/search \
+    --all-classes --calibrate --block-signature "403 | Forbidden" --benign /tmp/benign.txt
+```
+
 ## Teardown
 
 ```sh
 docker compose -p waffen-lab down
+docker compose -f bunkerweb-compose.yml -p waffen-lab-bw down   # if the BunkerWeb lab was started
 ```
 
 > Local testing only. This lab is self-contained; point WAFFEN at third-party

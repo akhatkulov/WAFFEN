@@ -210,6 +210,19 @@ and a pooled run with a curl-argv transform fell back to curl cleanly. Pooled wa
 faster on localhost (≈6.1 vs 10.1 ms/request) — a bigger gap is expected on a remote
 HTTPS target, where keep-alive also removes a per-request TLS handshake.
 
+### 6.8 Third WAF + strengthened coverage
+Closing the documented weak sides (see `docs/COMPARISON.md`):
+- **A 3rd independent WAF — BunkerWeb** (`lab/bunkerweb-compose.yml`, a distinct product,
+  not CRS alone), in front of the same Juice Shop. WAFFEN flags it behaviorally
+  (`Generic/Unknown WAF`, no false vendor match from the 119-signature table), auto-calibrates
+  (`waf_detected=True`, conf 0.90), and scores **71.6% coverage at 0% false-positives**. WAFFEN
+  is now validated on **RedEye + OWASP CRS + BunkerWeb**.
+- **Fingerprint 48 → 119 vendors** (the +71 ported from wafw00f's plugin source, cross-checked;
+  all regexes compile, 0 duplicates) — and still no false match on the CRS/BunkerWeb labs.
+- **SQLi verifier extracts a DB-evaluated proof value** as a high-confidence fall-through; on the
+  error-leaking Juice Shop endpoint the error-signature channel confirms first (0.80), and the
+  extraction channel (0.95) is exercised by unit tests for error-suppressed targets.
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline

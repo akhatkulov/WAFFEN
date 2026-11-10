@@ -9,6 +9,17 @@ Validated against a **second, independent WAF** (local OWASP CRS / ModSecurity),
 plus the fixes and features that cross-WAF validation surfaced.
 
 ### Added
+- **Weak sides strengthened** (the honest gaps in `docs/COMPARISON.md`, each verified
+  against real sources):
+  - WAF **fingerprint signatures 48 → 119** — the +71 ported straight from wafw00f's plugin
+    set (verified by cloning the repo; generic phrases dropped to avoid false matches).
+  - **SQLi verifier now extracts a DB-evaluated value** (arithmetic/version marker via
+    EXTRACTVALUE/CAST/CONVERT/`||` per MySQL/MariaDB/PostgreSQL/MSSQL/SQLite/Oracle, grounded
+    in PayloadsAllTheThings) — "confirmed injectable" becomes "confirmed, here's the proof value".
+  - **Stronger corpus harvester** (`eval/corpus.py`): broader PayloadsAllTheThings dir→class
+    mapping + robust extraction; fixed a latent bug that dropped fence-lookalike wordlist lines.
+  - **Validated on a 3rd independent WAF** — BunkerWeb (`lab/bunkerweb-compose.yml`): 71.6%
+    coverage at 0% false-positives, behavioral fingerprint, auto-calibration.
 - **Much wider coverage** (gaps from `docs/COMPARISON.md`, closed via an independently
   verified multi-agent pass):
   - WAF **fingerprint signatures 9 → 48** vendors (Barracuda, FortiWeb, Citrix NetScaler,

@@ -1,0 +1,30 @@
+# 3rd-WAF validation: BunkerWeb (a distinct WAF product, not CRS/ModSecurity alone)
+# in front of the SAME local Juice Shop, on a separate port. Attaches to the network
+# created by docker-compose.yml, so bring that up first. See docs/VALIDATION.md §6.
+#
+#   docker compose -p waffen-lab up -d                      # juiceshop + CRS (creates the network)
+#   docker compose -f bunkerweb-compose.yml -p waffen-lab-bw up -d
+#   waffen eval --target http://localhost:18081 --path /rest/products/search \
+#       --all-classes --calibrate --block-signature "403 | Forbidden" --benign benign.txt
+services:
+  bunkerweb:
+    image: bunkerity/bunkerweb-all-in-one:latest
+    container_name: waffen-lab-bunkerweb
+    environment:
+      SERVER_NAME: "localhost"
+      HTTP_PORT: "8080"
+      USE_REVERSE_PROXY: "yes"
+      REVERSE_PROXY_HOST: "http://waffen-lab-juiceshop:3000"
+      REVERSE_PROXY_URL: "/"
+      USE_MODSECURITY: "yes"
+      USE_MODSECURITY_CRS: "yes"
+      USE_ANTIBOT: "no"          # keep it a pure WAF test (no bot challenge)
+      USE_LIMIT_REQ: "no"        # no rate-limit, so coverage isn't ban-confounded
+    ports:
+      - "18081:8080"
+    networks:
+      - waffen-lab_default
+    restart: unless-stopped
+networks:
+  waffen-lab_default:
+    external: true              # created by docker-compose.yml (project waffen-lab)
