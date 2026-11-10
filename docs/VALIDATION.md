@@ -188,6 +188,19 @@ it eliminates every SQLi evasion the engine could find (0 bypasses) at **0% fals
 positives**, whereas **PL4 buys no extra SQLi protection here yet costs 35% of benign
 traffic**. WAFFEN produced that recommendation by measurement, not assumption.
 
+### 6.6 Beyond the query string — JSON-body injection and live session auth
+- **JSON-body injection** (`--inject json`, `POST /rest/user/login`, field `email`): CRS PL1
+  blocks the raw `' OR 1=1--` login payload (403). The search found CRS-evading mutations
+  that still reach the database — **3 distinct verified** (error-based) login-SQLi payloads
+  (`whitespace_newline`, `zero_width_insert`, `sql_string_concat_pipe`), while 1164
+  non-injecting THROUGHs (401 evasions that evade CRS but do not log in) were correctly left
+  **unverified**. Confirms WAFFEN works at a body/JSON injection point, not only the query string.
+- **Live session auth** (`--header`): against a real protected endpoint (`GET /rest/basket/1`,
+  which is `401` with no token), threading `--header "Authorization: Bearer <jwt>"` through
+  WAFFEN's oracle flips the response to `200` — and does so through a request transform's
+  curl-argv path too, not only the default path. The single-source `apply_auth` design is
+  confirmed live, end-to-end (previously only unit-tested).
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
