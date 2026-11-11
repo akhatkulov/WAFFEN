@@ -219,6 +219,8 @@ def cmd_bypass(args) -> int:
         canary_payload=args.canary or None, canary_every=args.canary_every,
         do_verify=args.verify and not args.mock, sender=sender,
         transport=args.transport, on_event=ev, scorer=_scorer,
+        cross_axis=getattr(args, "cross_axis", False),
+        cross_axis_budget=getattr(args, "cross_axis_budget", 200),
     )
     report.print_engine_summary(runs)
     if args.out:
@@ -928,8 +930,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--method", default="GET")
     b.add_argument("--inject", default="query",
                    choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload", "auto"])
-    b.add_argument("--strategy", default="beam", choices=["beam", "genetic", "bestfirst", "mcts"],
-                   help="search strategy")
+    b.add_argument("--strategy", default="beam", choices=["beam", "genetic", "bestfirst", "mcts", "adaptive"],
+                   help="search strategy (adaptive = multi-stage pipeline)")
     b.add_argument("--branch", type=int, default=4, help="bestfirst: mutators tried per expansion")
     b.add_argument("--iterations", type=int, default=200, help="mcts: tree-search iterations")
     b.add_argument("--rollout-depth", type=int, default=3, help="mcts: rollout depth")
@@ -965,6 +967,10 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--rules-out", default="", help="write suggested WAF rules (Markdown) here")
     b.add_argument("--nuclei", default="", metavar="DIR",
                    help="write Nuclei v3 differential WAF-audit templates (one per verified bypass) to DIR")
+    b.add_argument("--cross-axis", action="store_true",
+                   help="second pass: cross-compose top mutated payloads × top transforms")
+    b.add_argument("--cross-axis-budget", type=int, default=200,
+                   help="request budget for cross-axis second pass (default: 200)")
     b.set_defaults(func=cmd_bypass)
 
     a = sub.add_parser("auto",

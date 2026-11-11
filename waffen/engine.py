@@ -62,7 +62,8 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                do_learn: bool = False, concurrency: int = 1,
                canary_payload: str | None = None, canary_every: int = 25,
                do_verify: bool = False, sender=None, transport: str = "curl",
-               on_event=None, scorer=None) -> list[BypassRun]:
+               on_event=None, scorer=None,
+               cross_axis: bool = False, cross_axis_budget: int = 200) -> list[BypassRun]:
     """Run the full sweep. `seeds` is an iterable of (attack_class, payload)."""
     runs: list[BypassRun] = []
     transforms = T.select(set(transform_names) if transform_names else None)
@@ -158,4 +159,36 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
             # put verified-exploitable findings first in the report order
             res.findings.sort(key=lambda f: (f.verified is not True, len(f.chain), f.payload))
             runs.append(BypassRun(tr.name, cls, res, verifs))
+
+    if cross_axis and runs:
+        try:
+            from .search.cross_axis import CrossAxisComposer, CrossAxisConfig
+            ca_cfg = CrossAxisConfig(budget=cross_axis_budget)
+            composer = CrossAxisComposer(target, config=ca_cfg, sender=sender,
+                                        transport=transport)
+            ca_result = composer.compose(runs)
+            if ca_result.findings:
+                ca_search = SearchResult(
+                    seed="(cross-axis)",
+                    attack_class=ca_result.findings[0].attack_class,
+                    findings=[],
+                    requests=ca_result.requests,
+                )
+                for caf in ca_result.findings:
+                    from .search.beam import Finding
+                    f = Finding(
+                        payload=caf.payload, chain=caf.chain + [f"via:{caf.transform}"],
+                        code=caf.code, attack_class=caf.attack_class,
+                    )
+                    ca_search.findings.append(f)
+                runs.append(BypassRun(
+                    f"cross-axis({ca_result.pairs_tested}t/{ca_result.pairs_skipped}s)",
+                    ca_result.findings[0].attack_class, ca_search, {},
+                ))
+            if on_event:
+                on_event("cross_axis", findings=len(ca_result.findings),
+                         tested=ca_result.pairs_tested, budget_used=ca_result.requests)
+        except Exception:
+            pass  # cross-axis is a bonus; never break the main sweep
+
     return runs

@@ -324,6 +324,7 @@ def run_auto(cfg: AutoConfig) -> int:
                 do_calibrate=False, do_learn=True, do_verify=True,
                 sender=None, transport=cfg.transport,
                 concurrency=1,
+                cross_axis=True, cross_axis_budget=min(200, cfg.max_requests // 3),
             )
             all_runs.extend(runs)
 
