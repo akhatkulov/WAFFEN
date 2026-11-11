@@ -160,6 +160,10 @@ waffen bypass --target https://your-waf.example --class "XSS Injection" \
 # batch-evaluate 4 candidates per round (speeds up beam/genetic/bestfirst)
 waffen bypass --target https://your-waf.example --class "Command Injection" \
   --strategy bestfirst --concurrency 4 --max-requests 300
+
+# export each verified bypass as a Nuclei v3 differential regression template
+waffen bypass --target https://your-waf.example --class "SQL Injection" \
+  --calibrate --verify --nuclei ./waf-audit-templates
 ```
 
 ---
@@ -255,6 +259,26 @@ wafw00f-style identification (9 vendor signatures) plus a heuristic test-plan hi
 ```bash
 waffen fingerprint --target https://your-waf.example
 ```
+
+---
+
+### `waffen cve-probe` — which 2026 WAF-engine CVE primitives look exploitable
+
+A safe, canary-token behavioural differential for the 2026 ModSecurity/Coraza engine
+CVEs (you can't read libmodsecurity's version over the wire, but you can test its
+behaviour). Each primitive is labelled **PRESENT / ABSENT / INCONCLUSIVE**; it's
+conservative — only a clean backend response (2xx/3xx/404) counts as a pass, so a
+`400`/`414`/`5xx` server rejection is never mis-read as a bypass.
+
+```bash
+waffen cve-probe --target https://your-waf.example --path /api/v1/search --param q
+```
+
+Covered: `t:removeComments` off-by-one (CVE-2026-104259), PCRE2 `@rxGlobal` match-limit
+(GHSA-5m93-4h75-3p2w), Coraza truncated-multipart (CVE-2026-41508), RFC 2231 `filename*`
+(CVE-2026-104269), inbound Brotli blind spot (CVE-2026-111497), and `t:base64DecodeExt`
+blanking (GHSA-4j47-8qcr-jf59) — the same primitives the search can then weaponise. See
+`docs/VALIDATION.md` §7 for pinned-engine reproductions.
 
 ---
 
