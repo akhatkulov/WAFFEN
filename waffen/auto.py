@@ -73,6 +73,7 @@ class AutoConfig:
     strategy: str = "beam"
     max_requests: int = 300
     yes: bool = False       # non-interactive — accept all defaults
+    reconstruct: bool = True  # build exploit seeds from recon results
     transport: str = ""
     out: str = ""
 
@@ -269,8 +270,36 @@ def run_auto(cfg: AutoConfig) -> int:
     except Exception as e:
         print(f"  {ui.yellow('!')} Gap scan xato: {e}")
 
-    # ==== PHASE 5: Bypass Search ===========================================
-    _phase(5, "BYPASS SEARCH",
+    # ==== PHASE 4.5: Payload Reconstruction ==================================
+    recon_seeds: list[tuple[str, str]] = []
+    if cfg.reconstruct and (score_result is not None or total_gaps > 0):
+        _phase(5, "PAYLOAD RECONSTRUCTION",
+               "Recon natijalaridan exploit template lar qurish...")
+        try:
+            from .recon.reconstruct import PayloadReconstructor
+            reconstructor = PayloadReconstructor()
+            if score_result is not None:
+                reconstructor.add_score_probe(score_result)
+            if 'reports' in dir() and reports:
+                reconstructor.add_gap_reports(reports)
+            templates = reconstructor.build()
+            recon_seeds = reconstructor.seeds()
+            if templates:
+                print(f"  {ui.green('+')} {len(templates)} template qurildi, "
+                      f"{len(recon_seeds)} seed generatsiya qilindi")
+                for t in templates[:5]:
+                    print(f"      {ui.bold(t.pattern[:50])} "
+                          + ui.gray(f"({t.engine}, gaps: {','.join(t.gap_tokens[:3])})"))
+                if len(templates) > 5:
+                    print(ui.gray(f"      ... va {len(templates)-5} ta yana"))
+            else:
+                print(f"  {ui.gray('-')} Recon gap topilmadi — reconstruction o'tkazildi")
+            results["reconstructed_seeds"] = len(recon_seeds)
+        except Exception as e:
+            print(f"  {ui.yellow('!')} Reconstruction xato: {e}")
+
+    # ==== PHASE 6: Bypass Search ===========================================
+    _phase(6, "BYPASS SEARCH",
            f"Evasion yo'llarini qidirish ({cfg.strategy} strategy, "
            f"{cfg.max_requests} req/class)...")
 
@@ -281,6 +310,8 @@ def run_auto(cfg: AutoConfig) -> int:
     all_runs = []
     for cls in cfg.attack_classes:
         seeds = [(cls, p) for p in kb_seeds.seeds_for(cls)]
+        # merge in reconstructed seeds for this class
+        seeds.extend((c, p) for c, p in recon_seeds if c == cls)
         if not seeds:
             print(f"  {ui.gray('-')} {cls}: seed yo'q, o'tkazildi")
             continue

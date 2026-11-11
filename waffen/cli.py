@@ -202,6 +202,12 @@ def cmd_bypass(args) -> int:
         print(ui.gray(f"  (canary: re-probing a known-benign value every {args.canary_every} sends; "
                       "only active at --concurrency 1 — see --help)"))
 
+    _scorer = None
+    if getattr(args, "fitness", "default") == "gradient":
+        from .search.gradient import GradientScorer
+        _scorer = GradientScorer()
+        print(ui.info("fitness   ") + ui.cyan("gradient") + ui.gray(" (10-feature calibratable scorer)"))
+
     runs = run_bypass(
         target, seeds,
         strategy=args.strategy, transform_names=transform_names, all_mutators=args.all_mutators,
@@ -212,7 +218,7 @@ def cmd_bypass(args) -> int:
         do_calibrate=args.calibrate, do_learn=args.learn, concurrency=args.concurrency,
         canary_payload=args.canary or None, canary_every=args.canary_every,
         do_verify=args.verify and not args.mock, sender=sender,
-        transport=args.transport, on_event=ev,
+        transport=args.transport, on_event=ev, scorer=_scorer,
     )
     report.print_engine_summary(runs)
     if args.out:
@@ -471,6 +477,65 @@ def cmd_dataset(args) -> int:
     else:
         write_jsonl(records, f"{base}.jsonl"); write_csv(records, f"{base}.csv")
         print("\n" + ui.ok(f"wrote {base}.jsonl and {base}.csv  (n={len(records)})"))
+    return 0
+
+
+def cmd_calibrate(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    target = Target(base_url=args.target, path=args.path, param=args.param, inject=args.inject,
+                    method=args.method, timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+
+    from .core.oracle import Oracle as _O
+    oracle = _O(target, transport=args.transport)
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+
+    if args.cluster:
+        print(ui.info("response clustering for ") + ui.bold(args.target))
+        print(ui.gray("  sending mixed probes to discover WAF response taxonomy..."))
+        print(ui.rule())
+
+        from .verify.cluster import ResponseClusterer
+        clusterer = ResponseClusterer(oracle)
+        profile = clusterer.run()
+
+        print(ui.info(f"cluster analysis ({profile.total_probes} probes, k={profile.k}, "
+                      f"silhouette={profile.silhouette:.2f}):\n"))
+        for c in sorted(profile.clusters, key=lambda x: x.avg_status):
+            color = {"PASS": ui.green, "BLOCK": ui.red, "CHALLENGE": ui.yellow,
+                     "RATELIMIT": ui.yellow, "UNKNOWN": ui.gray}.get(c.label, ui.gray)
+            print(f"  {color(f'{c.label:12s}')} (k={c.cluster_id}): "
+                  f"status={c.avg_status:.0f}, ~{c.avg_size:.0f} bytes, "
+                  f"{c.avg_time*1000:.0f}ms  [{c.size} samples]")
+            if c.example_payloads:
+                for ex in c.example_payloads[:2]:
+                    print(f"    {ui.gray(ex[:50])}")
+
+        if args.out:
+            import json as _json
+            from pathlib import Path as _P
+            _P(args.out).write_text(_json.dumps(profile.as_dict(), indent=2, ensure_ascii=False))
+            print(f"\n{ui.ok(f'cluster report written to {args.out}')}")
+    else:
+        print(ui.info("calibrating ") + ui.bold(args.target))
+        print(ui.rule())
+
+        from .verify.calibrate import calibrate
+        cal = calibrate(oracle)
+        if cal.waf_detected:
+            print(f"  {ui.green('+')} WAF detected, confidence={cal.confidence:.0%}")
+            print(f"  {ui.info('block codes:   ')} {sorted(cal.block_codes)}")
+            print(f"  {ui.info('pass codes:    ')} {sorted(cal.pass_codes)}")
+            print(f"  {ui.info('block size:    ')} {cal.block_size_band}")
+            print(f"  {ui.info('block marker:  ')} {cal.block_marker[:60] or '(none)'}")
+            print(f"  {ui.info('timing:        ')} {'reliable' if cal.timing_reliable else 'unreliable'}")
+        else:
+            print(f"  {ui.yellow('?')} no WAF detected (benign and attack responses indistinguishable)")
     return 0
 
 
@@ -890,6 +955,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "blocked, the test source is likely banned, not the content risky. "
                         "Only checked at --concurrency 1 (sequential sends)")
     b.add_argument("--canary-every", type=int, default=25, help="re-probe the canary every N sends")
+    b.add_argument("--fitness", default="default", choices=["default", "gradient"],
+                   help="scoring function: 'default' (built-in heuristic) or 'gradient' (10-feature "
+                        "calibratable scorer — recommended for scoring-engine WAFs)")
     b.add_argument("--verbose", action="store_true", help="print search events")
     b.add_argument("--out", default="", help="write findings JSONL here")
     b.add_argument("--rules", action="store_true",
@@ -1017,6 +1085,17 @@ def build_parser() -> argparse.ArgumentParser:
                      help="where to place the probe (default: query)")
     cvp.add_argument("--method", default="GET", help="HTTP method for query inject (default: GET)")
     cvp.set_defaults(func=cmd_cve_probe)
+
+    cal = sub.add_parser("calibrate",
+                         help="learn WAF block/pass signature, or --cluster to discover full response taxonomy")
+    _add_target_args(cal)
+    cal.add_argument("--param", default="q", help="parameter to inject (default: q)")
+    cal.add_argument("--inject", default="query", choices=["query", "body", "json"])
+    cal.add_argument("--method", default="GET")
+    cal.add_argument("--cluster", action="store_true",
+                     help="discover full response taxonomy via k-means clustering (PASS/BLOCK/CHALLENGE/RATELIMIT)")
+    cal.add_argument("--out", default="", help="write calibration/cluster report JSON here")
+    cal.set_defaults(func=cmd_calibrate)
 
     fp = sub.add_parser("fingerprint", help="identify the WAF in front of a target")
     _add_target_args(fp)

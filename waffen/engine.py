@@ -62,7 +62,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                do_learn: bool = False, concurrency: int = 1,
                canary_payload: str | None = None, canary_every: int = 25,
                do_verify: bool = False, sender=None, transport: str = "curl",
-               on_event=None) -> list[BypassRun]:
+               on_event=None, scorer=None) -> list[BypassRun]:
     """Run the full sweep. `seeds` is an iterable of (attack_class, payload)."""
     runs: list[BypassRun] = []
     transforms = T.select(set(transform_names) if transform_names else None)
@@ -100,6 +100,9 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
             eff = _effective_target(target, cls)
             oracle = Oracle(eff, sender=sender, request_transform=rt, calibration=cal, delay=delay,
                             canary_payload=canary_payload, canary_every=canary_every, transport=transport)
+            if scorer is not None:
+                from .search.gradient import patch_oracle_scorer
+                patch_oracle_scorer(oracle, scorer)
             mutators = _mutators_for(cls, all_mutators)
             if norm_profile is not None and _reorder is not None:
                 mutators = _reorder(mutators, norm_profile)
