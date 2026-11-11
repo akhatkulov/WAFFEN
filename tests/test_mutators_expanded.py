@@ -109,6 +109,18 @@ def test_generic_extra_mutators_change_seed_and_selectable_for_any_class():
             assert name in selected, f"{name} not selectable for {attack_class}"
 
 
+def test_base64_malformed_prefix_mutator():
+    import base64 as _b64
+    m = REGISTRY.get("base64_malformed_prefix")
+    payload = "<script>alert(1)</script>"
+    out = m.apply(payload)
+    assert out != payload and out.startswith("A==")          # malformed single-char padding group
+    assert _b64.b64decode(out[3:]).decode() == payload       # suffix is clean base64 of the payload
+    # encoder with classes='*' -> selectable under every attack class
+    for cls in ("SQL Injection", "XSS Injection", "Command Injection"):
+        assert "base64_malformed_prefix" in {x.name for x in REGISTRY.select(attack_class=cls)}
+
+
 def test_deterministic_mutators_are_stable_across_calls():
     # no unseeded randomness: applying twice must give the same result
     sample = SQL_TAMPER_MUTATORS[:3] + XSS_CONTEXT_MUTATORS[:3] + GENERIC_EXTRA_MUTATORS[:3]

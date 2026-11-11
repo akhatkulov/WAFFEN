@@ -21,8 +21,19 @@ All notable changes to WAFFEN are documented here. Format loosely follows
   - **`mp_filename_rfc2231`** transform (`core/transforms.py`, STRUCTURAL) — a benign
     decoy `filename="decoy.txt"` plus the real payload in `filename*=UTF-8''…`, which the
     WAF ignores and RFC 2231-aware backends honour (**CVE-2026-104269**).
-  - Registry 161 → 163 mutators; transforms 19 → 21 (structural 8 → 10). Tests in
-    `tests/test_structural.py` and `tests/test_mutators_expanded.py`.
+  - **`brotli_body`** transform (`core/transforms.py`) — a `Content-Encoding: br`
+    request body, the compression blind spot behind Brotli "Node2Shell"
+    (**CVE-2026-111497**). WAFFEN is stdlib-only and Python ships no brotli, so a new
+    pure-Python **stored/uncompressed Brotli encoder** (`core/brotli_raw.py`) emits a
+    valid `br` stream (verified round-trip vs the `brotli` CLI and node). The binary
+    stream (NUL bytes) can't ride in argv, so `RequestTransform` gained an opt-in
+    `stdin_fn`: the Oracle pipes the bytes to curl via `--data-binary @-` per request
+    (concurrency-safe, no temp files). Proven end-to-end against a local server.
+  - **`base64_malformed_prefix`** mutator (`mutate/encoders.py`) — `base64(payload)`
+    behind a malformed `A==` padding group that blanks ModSecurity `t:base64DecodeExt`
+    (**GHSA-4j47-8qcr-jf59**) while tolerant backends still recover the payload.
+  - Registry 161 → 164 mutators; transforms 19 → 22 (structural 8 → 10). Tests in
+    `tests/test_structural.py`, `tests/test_mutators_expanded.py`, `tests/test_brotli_raw.py`.
 
 ## [0.2.0] — 2026-11-10
 
