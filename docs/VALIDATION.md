@@ -284,6 +284,50 @@ not the WAF. Fixed: calibration now only overrides the signature verdict when co
 (`MIN_CALIBRATION_CONFIDENCE`), else it falls back to the signature — applied in the oracle and both
 eval/dataset classifiers (`tests/test_calibration_gate.py`). High-confidence WAFs are unaffected.
 
+## 7. 2026 WAF-engine CVE primitives — reproduced against a version-pinned engine
+
+The rolling `owasp/modsecurity-crs:nginx` now ships **libmodsecurity 3.0.17**, which
+already patches the 2026 transformation CVEs, so the standing lab (§6) cannot
+reproduce them. To validate the newly added primitives honestly, a second lab
+(`lab/modsec-vuln-compose.yml`) pins the **vulnerable** engine and runs it beside the
+patched one for a version-differential — same rule, same payload, only the engine
+version differs.
+
+### 7.1 CVE-2026-104259 (`t:removeComments` off-by-one) — reproduced + patch-verified
+- **Vulnerable engine obtained:** `owasp/modsecurity-crs:4.25.1-nginx-202609180209`
+  bundles **libmodsecurity 3.0.16** (confirmed: `libmodsecurity.so.3.0.16`); the rolling
+  tag is 3.0.17.
+- **Isolation:** stock CRS libinjection (942100) catches `UNION SELECT` regardless of
+  comments, which masks the transformation bug. So the probe uses a custom rule
+  (`lab/vuln-removecomments-rule.conf`) matching `@rx blockedtoken` after
+  `t:removeComments` on the non-SQL token `blockedtoken` — verified that a lone `/**/`
+  with no SQL keywords is **200** at PL1, so this rule is the only thing that can block.
+- **Payloads are produced by WAFFEN's own mutators** (`lab/vuln_repro.py`): seed
+  `"blocked token"` → `sql_between_comment` = `blocked/**/token`, `sql_adjacent_comment`
+  = `blocked/**//**/token`.
+- **Result** (`/rest/products/search?q=`):
+
+  | engine | baseline `blocked/**/token` | probe `blocked/**//**/token` |
+  |---|---|---|
+  | **libmodsecurity 3.0.16 (vulnerable)** | `403` blocked | **`200` — BYPASS** |
+  | **libmodsecurity 3.0.17 (patched)** | `403` blocked | `403` blocked |
+
+  Same rule and payloads on both; the adjacent-comment probe passes **only** on 3.0.16.
+  This both confirms WAFFEN's `sql_adjacent_comment` exploits CVE-2026-104259 and
+  verifies 3.0.17 is the fix. Reproduce:
+
+  ```
+  docker compose -f lab/modsec-vuln-compose.yml -p waffen-lab-vuln up -d
+  .venv/bin/python lab/vuln_repro.py      # -> PASS
+  docker compose -f lab/modsec-vuln-compose.yml -p waffen-lab-vuln down
+  ```
+- **Not yet reproduced here:** `mp_truncated` (Coraza CVE-2026-41508 — needs a pinned
+  vulnerable Coraza, a separate engine), `base64_malformed_prefix`/`brotli_body`
+  (need a sink that base64/br-decodes the param), and `sql_pcre_matchlimit_pad`
+  (needs a CRS rule whose regex exceeds `SecPcreMatchLimit`). The §7.1 method — pin
+  the vulnerable engine, isolate the rule, drive it with WAFFEN mutators — is the
+  template for these follow-ups.
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
