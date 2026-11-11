@@ -55,6 +55,76 @@ def _gather_seeds(args):
     return seeds
 
 
+def cmd_adaptive(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .search.adaptive import AdaptiveSearch, AdaptiveConfig
+    target = Target(base_url=args.target, path=args.path, param=args.param, inject=args.inject,
+                    method=args.method, timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+
+    cfg = AdaptiveConfig(
+        total_budget=args.budget, search_strategy=args.search_strategy,
+        deepen_strategy=args.deepen_strategy, do_verify=args.verify,
+        transport=args.transport, concurrency=args.concurrency,
+    )
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("adaptive pipeline for ") + ui.bold(args.target))
+    print(ui.gray(f"  budget={cfg.total_budget}  search={cfg.search_strategy}  deepen={cfg.deepen_strategy}"))
+    print(ui.gray(f"  stages: learn → score-probe → gap-scan → search → deepen"))
+    print(ui.rule())
+
+    classes = [c.strip() for c in args.classes.split(",") if c.strip()] or ["sqli"]
+
+    def ev(kind, **kw):
+        if kind == "adaptive_start":
+            print(ui.info("starting 5-stage adaptive pipeline"))
+        elif kind.startswith("learn_"):
+            print(f"  {ui.green('+')} learn: {kind} {kw}")
+        elif kind.startswith("score_"):
+            print(f"  {ui.green('+')} score: {kw}")
+        elif kind.startswith("gaps_"):
+            print(f"  {ui.green('+')} gaps: {kw}")
+        elif kind == "searched":
+            f_count = kw.get("findings", 0)
+            v_count = kw.get("verified", 0)
+            print(f"  {ui.green('+')} search: {f_count} findings ({v_count} verified)")
+        elif kind == "deepened":
+            f_count = kw.get("findings", 0)
+            v_count = kw.get("verified", 0)
+            print(f"  {ui.green('+')} deepen: {f_count} findings ({v_count} verified)")
+        elif kind == "adaptive_done":
+            print(ui.rule())
+            print(f"  {ui.info('budget:   ')} {kw.get('budget_used', 0)} requests")
+            print(f"  {ui.info('findings: ')} {kw.get('findings', 0)}")
+            print(f"  {ui.info('verified: ')} {ui.bold(str(kw.get('verified', 0)))}")
+
+    search = AdaptiveSearch(target, cfg, on_event=ev)
+    result = search.run(classes)
+
+    if result.verified_findings > 0:
+        print(f"\n  {ui.green(ui.bold('BYPASS TOPILDI!'))}")
+        for f in result.all_findings():
+            if getattr(f, "verified", False):
+                chain = getattr(f, "chain", [])
+                print(f"    {ui.green('V')} {f.payload[:55]}  chain={chain}")
+    elif result.total_findings > 0:
+        print(f"\n  {ui.yellow('Through payloadlar bor — verify qilinmagan')}")
+    else:
+        print(f"\n  {ui.gray('Bypass topilmadi — WAF kuchli')}")
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        _P(args.out).write_text(_json.dumps(result.as_dict(), indent=2))
+        print(ui.ok(f"adaptive report written to {args.out}"))
+    return 0
+
+
 def cmd_watch(args) -> int:
     if not args.findings:
         print("[err] --findings is required", file=sys.stderr)
@@ -972,6 +1042,23 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--cross-axis-budget", type=int, default=200,
                    help="request budget for cross-axis second pass (default: 200)")
     b.set_defaults(func=cmd_bypass)
+
+    ad = sub.add_parser("adaptive",
+                        help="multi-stage adaptive pipeline: learn → score-probe → gap-scan → search → deepen")
+    _add_target_args(ad)
+    ad.add_argument("--param", default="q", help="parameter name")
+    ad.add_argument("--inject", default="query", choices=["query", "body", "json"])
+    ad.add_argument("--method", default="GET")
+    ad.add_argument("--classes", default="sqli", help="comma-separated attack classes (default: sqli)")
+    ad.add_argument("--budget", type=int, default=2000, help="total request budget across all stages")
+    ad.add_argument("--search-strategy", default="beam", choices=["beam", "genetic", "bestfirst"],
+                    help="primary search strategy for stage 4 (default: beam)")
+    ad.add_argument("--deepen-strategy", default="mcts", choices=["mcts", "bestfirst", "beam"],
+                    help="deepening strategy for stage 5 (default: mcts)")
+    ad.add_argument("--verify", action="store_true", help="semantically verify findings")
+    ad.add_argument("--concurrency", type=int, default=1)
+    ad.add_argument("--out", default="", help="write adaptive report JSON here")
+    ad.set_defaults(func=cmd_adaptive)
 
     a = sub.add_parser("auto",
                        help="guided wizard — answers a few questions, runs the full pipeline automatically")
