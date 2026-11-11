@@ -32,7 +32,11 @@ All notable changes to WAFFEN are documented here. Format loosely follows
   - **`base64_malformed_prefix`** mutator (`mutate/encoders.py`) — `base64(payload)`
     behind a malformed `A==` padding group that blanks ModSecurity `t:base64DecodeExt`
     (**GHSA-4j47-8qcr-jf59**) while tolerant backends still recover the payload.
-  - Registry 161 → 164 mutators; transforms 19 → 22 (structural 8 → 10). Tests in
+  - **`sql_pcre_matchlimit_pad`** mutator (`mutate/sql_tamper.py`) — appends ~8 KB of
+    comment-pattern filler (neutralised for the DB by a trailing ` -- ` comment) to push
+    a CRS regex past PCRE2's low `SecPcreMatchLimit`, tripping the `@rxGlobal` match-limit
+    fail-open (**GHSA-5m93-4h75-3p2w**).
+  - Registry 161 → 165 mutators; transforms 19 → 22 (structural 8 → 10). Tests in
     `tests/test_structural.py`, `tests/test_mutators_expanded.py`, `tests/test_brotli_raw.py`.
 
 ## [0.2.0] — 2026-11-10
