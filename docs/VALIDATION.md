@@ -346,6 +346,22 @@ Juice Shop SQLi sink, it reports **no clean bypass** — which is correct and in
 So the probe's value is trustworthy triage: it never cries wolf, and its PRESENT path is
 unit-tested against a simulated vulnerable engine (`tests/test_cve_probe.py`).
 
+### 7.3 Coraza CVE-2026-41508 — attempted, did NOT reproduce on 3.8.0/3.8.1 (honest)
+A version-differential was built for the Coraza truncated-multipart claim: a minimal
+Go `coraza/v3` filter (rule 200003, `MULTIPART_STRICT_ERROR`) compiled at **v3.8.0**
+and **v3.8.1**, fed a truncated `multipart/form-data` body (no closing `--boundary--`).
+**Both versions blocked it (403/403)** — the bypass did not reproduce.
+
+Reading the actual `internal/bodyprocessors/multipart.go` diff explains why: in
+**3.8.0** `io.ErrUnexpectedEOF` **already set** `MULTIPART_STRICT_ERROR` (so rule 200003
+fires); **3.8.1** only *refines* this (`flagUnexpectedEOF` now skips the flag when the
+body was truncated by `SecRequestBodyLimit`, i.e. `INBOUND_DATA_ERROR=1`, to avoid
+false-positives on oversized bodies), plus adds a `filename*`-continuation check and a
+quadratic-CPU fix. So the "3.8.0 fails open on truncation" description does not hold for
+these versions. **Conclusion:** `mp_truncated` stays a useful *probe* of any WAF's
+truncation handling, but it is **not** a confirmed CVE-2026-41508 bypass on 3.8.0/3.8.1
+— reported as a non-result rather than inflated into a bypass.
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
