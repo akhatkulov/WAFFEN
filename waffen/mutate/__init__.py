@@ -9,5 +9,6 @@ from . import generic_extra  # noqa: F401  (side effect: registers generic mutat
 from . import quickwin  # noqa: F401  (side effect: registers Phase B quick-win mutators)
 from . import advanced  # noqa: F401  (side effect: registers Phase B advanced mutators)
 from . import semantic_frag  # noqa: F401  (side effect: registers semantic fragmentation mutators)
+from . import ssti_ssrf_xxe  # noqa: F401  (side effect: registers SSTI/SSRF/XXE mutators)
 
 __all__ = ["REGISTRY", "Mutator", "Registry"]

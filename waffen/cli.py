@@ -55,6 +55,93 @@ def _gather_seeds(args):
     return seeds
 
 
+def cmd_watch(args) -> int:
+    if not args.findings:
+        print("[err] --findings is required", file=sys.stderr)
+        return 2
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+
+    from .watch import load_findings, WatchRunner, write_watch_jsonl
+
+    findings = load_findings(args.findings)
+    if not findings:
+        print(ui.warn("no findings loaded — is the JSONL empty?"))
+        return 0
+
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method,
+                    timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("watch ") + ui.bold(args.target)
+          + ui.gray(f"   {len(findings)} finding(s) from {args.findings}"))
+    rounds_label = "infinite" if args.rounds == 0 and not args.once else str(1 if args.once else args.rounds)
+    print(ui.gray(f"  interval={args.interval}s  rounds={rounds_label}"))
+    print(ui.rule())
+
+    runner = WatchRunner(target, transport=args.transport)
+
+    def printer(report, diff, max_rounds):
+        rounds_str = f"/{max_rounds}" if max_rounds else ""
+        print(f"\n  {ui.bold(f'Round {report.round_num}{rounds_str}')} ({report.timestamp})")
+        for e in report.entries:
+            if e.current_verdict == "ALIVE":
+                icon = ui.green("●")
+                tag = ui.green("ALIVE  ")
+            elif e.current_verdict == "BLOCKED":
+                icon = ui.red("✗")
+                tag = ui.red("BLOCKED")
+            else:
+                icon = ui.yellow("?")
+                tag = ui.yellow("ERROR  ")
+
+            delta = ""
+            for nb in diff.newly_blocked:
+                if nb.payload == e.payload and nb.transform == e.transform:
+                    delta = ui.red(" ← was ALIVE")
+                    break
+            for na in diff.newly_alive:
+                if na.payload == e.payload and na.transform == e.transform:
+                    delta = ui.green(" ← was BLOCKED")
+                    break
+
+            cls = ui.gray(f"{e.attack_class:5}")
+            payload_short = e.payload[:45]
+            xform = ui.gray(f"(transform: {e.transform})")
+            print(f"  {icon} {tag} {cls} {payload_short:47} {xform}{delta}")
+
+        nb_count = len(diff.newly_blocked)
+        na_count = len(diff.newly_alive)
+        delta_parts = []
+        if nb_count:
+            delta_parts.append(ui.red(f"{nb_count} newly blocked"))
+        if na_count:
+            delta_parts.append(ui.green(f"{na_count} newly alive"))
+        delta_str = f" ({', '.join(delta_parts)} since last)" if delta_parts else ""
+        print(f"\n  Summary: {ui.green(str(report.alive))} alive / "
+              f"{ui.red(str(report.blocked))} blocked / "
+              f"{report.errored} errors{delta_str}")
+
+    if args.once:
+        reports = [runner.retest(findings, round_num=1)]
+        diff = runner.diff_report(None, reports[0])
+        printer(reports[0], diff, 1)
+    else:
+        reports = runner.run_loop(findings, interval=args.interval,
+                                 max_rounds=args.rounds, printer=printer)
+
+    if args.out and reports:
+        write_watch_jsonl(reports, args.out)
+        print(f"\n{ui.ok(f'watch report written to {args.out}')}")
+
+    return 0
+
+
 def cmd_auto(args) -> int:
     from .auto import run_auto, AutoConfig
     cfg = AutoConfig(
@@ -827,6 +914,20 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--header", "-H", action="append", default=None)
     a.add_argument("--cookie", default="")
     a.set_defaults(func=cmd_auto)
+
+    w = sub.add_parser("watch",
+                       help="re-test saved bypass findings and track what still works vs what got patched")
+    _add_target_args(w)
+    w.add_argument("--findings", required=True, help="JSONL from `waffen bypass --out` with saved findings")
+    w.add_argument("--param", default="q", help="parameter name (default: q)")
+    w.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                   help="where to inject (default: query)")
+    w.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    w.add_argument("--interval", type=int, default=3600, help="seconds between rounds (default: 3600)")
+    w.add_argument("--rounds", type=int, default=0, help="max rounds (0 = infinite, default: 0)")
+    w.add_argument("--once", action="store_true", help="run one check and exit")
+    w.add_argument("--out", default="", help="write watch report JSONL here")
+    w.set_defaults(func=cmd_watch)
 
     e = sub.add_parser("eval", help="score WAF coverage + false-positive rate over a corpus")
     _add_target_args(e)
