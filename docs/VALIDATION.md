@@ -362,6 +362,28 @@ these versions. **Conclusion:** `mp_truncated` stays a useful *probe* of any WAF
 truncation handling, but it is **not** a confirmed CVE-2026-41508 bypass on 3.8.0/3.8.1
 — reported as a non-result rather than inflated into a bypass.
 
+### 7.4 GHSA-4j47-8qcr-jf59 (`t:base64DecodeExt`) — confirmed, but version-INDEPENDENT
+Same isolated setup as §7.1 (rule `9999002`, `@rx blockedtoken` after
+`t:base64DecodeExt` on the non-SQL token, both engines). WAFFEN's mutators drive it:
+`base64` = `YmxvY2tlZHRva2Vu` (baseline), `base64_malformed_prefix` =
+`A==YmxvY2tlZHRva2Vu` (probe).
+
+| payload | vuln 3.0.16 | patched 3.0.17 |
+|---|---|---|
+| plain base64 (baseline) | `403` | `403` |
+| `A==` + base64 (probe) | **`200`** | **`200`** |
+
+So the probe blinds `t:base64DecodeExt` and is let through — but on **both** engines.
+Direct probing showed a malformed `A==` group **anywhere** (prefix, middle, or suffix)
+blanks the decoded value on 3.0.16 *and* 3.0.17, while excess padding (`====`) still
+decodes on both. Unlike §7.1 this is therefore **not** a version-differential: a
+leading bad group has no preceding bytes for the 3.0.17 "preserve decoded bytes" fix
+to save, so both return empty. **Honest conclusion:** `base64_malformed_prefix` is a
+confirmed, *version-independent* WAF-blinding primitive against stock `t:base64DecodeExt`
+(stronger reach than a patch-gated bypass), but it does **not** demonstrate a 3.0.17
+fix. Exploitability still needs a tolerant backend to recover the payload the WAF never
+saw — the blinding is proven here; backend recovery is sink-dependent.
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline

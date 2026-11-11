@@ -33,7 +33,7 @@ services:
       ANOMALY_OUTBOUND: "4"
       MODSEC_RESP_BODY_ACCESS: "On"
     volumes:
-      - ./vuln-removecomments-rule.conf:/opt/owasp-crs/rules/zzz-waffen-removecomments.conf:ro
+      - ./vuln-engine-rules.conf:/opt/owasp-crs/rules/zzz-waffen-engine-rules.conf:ro
     ports:
       - "18081:8080"
     depends_on: [juiceshop]
@@ -52,7 +52,7 @@ services:
       ANOMALY_OUTBOUND: "4"
       MODSEC_RESP_BODY_ACCESS: "On"
     volumes:
-      - ./vuln-removecomments-rule.conf:/opt/owasp-crs/rules/zzz-waffen-removecomments.conf:ro
+      - ./vuln-engine-rules.conf:/opt/owasp-crs/rules/zzz-waffen-engine-rules.conf:ro
     ports:
       - "18082:8080"
     depends_on: [juiceshop]
