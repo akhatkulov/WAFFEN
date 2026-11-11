@@ -140,6 +140,28 @@ def cmd_bypass(args) -> int:
                 print(ui.ok(f"rule recommendations written to {args.rules_out}"))
         else:
             print("\n" + ui.gray("(no verified-exploitable findings — nothing to recommend a rule for)"))
+
+    if args.nuclei:
+        from .report import nuclei as nuclei_report
+        # verified findings only, deduped like the rule suggestions above
+        seen_n: set = set()
+        pairs = []
+        for run in runs:
+            for f in run.result.findings:
+                if not f.verified:
+                    continue
+                key = (run.attack_class, f.payload)
+                if key in seen_n:
+                    continue
+                seen_n.add(key)
+                if not getattr(f, "attack_class", ""):
+                    f.attack_class = run.attack_class
+                pairs.append((run.result.seed, f))
+        if pairs:
+            paths = nuclei_report.write_nuclei(pairs, target, args.nuclei)
+            print(ui.ok(f"{len(paths)} Nuclei audit template(s) written to {args.nuclei}/"))
+        else:
+            print("\n" + ui.gray("(no verified-exploitable findings — no Nuclei templates emitted)"))
     return 0
 
 
@@ -607,6 +629,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--rules", action="store_true",
                    help="print suggested WAF rules for verified-exploitable findings")
     b.add_argument("--rules-out", default="", help="write suggested WAF rules (Markdown) here")
+    b.add_argument("--nuclei", default="", metavar="DIR",
+                   help="write Nuclei v3 differential WAF-audit templates (one per verified bypass) to DIR")
     b.set_defaults(func=cmd_bypass)
 
     e = sub.add_parser("eval", help="score WAF coverage + false-positive rate over a corpus")

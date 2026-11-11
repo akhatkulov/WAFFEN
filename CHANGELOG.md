@@ -38,6 +38,12 @@ All notable changes to WAFFEN are documented here. Format loosely follows
     fail-open (**GHSA-5m93-4h75-3p2w**).
   - Registry 161 → 165 mutators; transforms 19 → 22 (structural 8 → 10). Tests in
     `tests/test_structural.py`, `tests/test_mutators_expanded.py`, `tests/test_brotli_raw.py`.
+- **Nuclei differential exporter** (`report/nuclei.py`, `bypass --nuclei DIR`): turns
+  verified bypass findings into Nuclei v3 *differential* WAF-audit templates — request 1
+  the raw seed (should be blocked), request 2 the WAFFEN mutation, firing only if the
+  baseline is blocked but the probe passes. A found bypass becomes a shareable, re-runnable
+  regression test for confirming a virtual patch. Stdlib-only YAML; output passes
+  `nuclei -validate`. Tests in `tests/test_nuclei_export.py`.
 
 ## [0.2.0] — 2026-11-10
 
