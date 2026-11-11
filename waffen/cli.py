@@ -55,6 +55,23 @@ def _gather_seeds(args):
     return seeds
 
 
+def cmd_auto(args) -> int:
+    from .auto import run_auto, AutoConfig
+    cfg = AutoConfig(
+        url=args.url,
+        path=args.path,
+        param=args.param,
+        yes=args.yes,
+        out=args.out,
+        timeout=args.timeout,
+        transport=args.transport,
+        tls_verify=args.tls_verify,
+        cookie=args.cookie or "",
+        headers=tuple(args.header or []),
+    )
+    return run_auto(cfg)
+
+
 def cmd_bypass(args) -> int:
     seeds = _gather_seeds(args)
     if not seeds:
@@ -409,6 +426,137 @@ def cmd_fingerprint(args) -> int:
     return 0
 
 
+def cmd_score_probe(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .recon.score_probe import ScoreProber
+    from .core.oracle import Oracle as _O
+    target = Target(base_url=args.target, path=args.path, param=args.param, inject=args.inject,
+                    method=args.method, timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+    oracle = _O(target, transport=args.transport)
+
+    if args.calibrate:
+        try:
+            from .verify.calibrate import calibrate
+            cal = calibrate(oracle)
+            oracle.calibration = cal
+            print(f"[*] calibrated: waf_detected={cal.waf_detected} confidence={cal.confidence:.2f}")
+        except Exception as e:
+            print(f"[warn] calibration failed: {e}", file=sys.stderr)
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("score-probe for ") + ui.bold(args.target)
+          + ui.gray(f"   class={args.attack_class} inject={target.inject} param={target.param!r}"))
+    print(ui.gray("  maps WAF detection thresholds: keyword → block/allow + progressive strip"))
+    print(ui.rule())
+
+    prober = ScoreProber(oracle)
+    result = prober.run(args.attack_class)
+
+    # keyword map
+    detected = [k for k in result.keyword_map if k.detected]
+    invisible = [k for k in result.keyword_map if not k.detected]
+    print(ui.info("keyword detection map ") + ui.gray(f"({len(result.keyword_map)} tokens tested)"))
+    if detected:
+        print(ui.red(f"  detected ({len(detected)}): ") + ui.gray(", ".join(k.token for k in detected[:30])))
+    if invisible:
+        print(ui.green(f"  invisible ({len(invisible)}): ") + ui.bold(", ".join(k.token for k in invisible[:30])))
+
+    # strip chain
+    print("\n" + ui.info("progressive strip chain"))
+    for i, s in enumerate(result.strip_chain):
+        marker = ui.red("█ BLOCK") if s.verdict == "BLOCKED" else ui.green("░ THRU ")
+        arrow = " ← flip" if i == result.flip_index else ""
+        print(f"  {marker}  {s.code}  {s.payload[:60]}{ui.bold(arrow)}")
+    if result.flip_index >= 0:
+        print(ui.info(f"\n  threshold flip at index {result.flip_index}"))
+    else:
+        print(ui.warn("\n  no flip found — all blocked or all passed"))
+
+    # boundary payloads
+    if result.boundary_payloads:
+        print("\n" + ui.info(f"boundary payloads ({len(result.boundary_payloads)} at the detection edge)"))
+        for b in result.boundary_payloads[:15]:
+            print(f"  {ui.green('░ THRU')}  {b.payload[:55]}  " + ui.gray(b.note[:40]))
+
+    print(ui.rule())
+    print(ui.gray(f"  {result.requests_used} requests used"))
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        _P(args.out).write_text(_json.dumps(result.as_dict(), indent=2, ensure_ascii=False))
+        print(ui.ok(f"score-probe report written to {args.out}"))
+    return 0
+
+
+def cmd_libinjection_scan(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .recon.libinjection_gaps import LibinjectionGapHunter
+    from .core.oracle import Oracle as _O
+    target = Target(base_url=args.target, path=args.path, param=args.param, inject=args.inject,
+                    method=args.method, timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+    oracle = _O(target, transport=args.transport)
+    engines = [e.strip() for e in args.engines.split(",") if e.strip()] or None
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("libinjection-scan for ") + ui.bold(args.target)
+          + ui.gray(f"   engines={engines or 'all'}"))
+    print(ui.gray("  probes database-specific SQL tokens for WAF blind spots"))
+    print(ui.rule())
+
+    hunter = LibinjectionGapHunter(target, sender=lambda p: oracle.send(p), engines=engines)
+    reports = hunter.scan_all()
+
+    total_gaps = 0
+    for r in reports:
+        icon = ui.green("●") if r.through > 0 else ui.gray("○")
+        print(f"  {icon} {ui.bold(r.engine):20s}  "
+              f"total={r.total}  blocked={r.blocked}  "
+              + (ui.green(f"gaps={r.through}") if r.through else ui.gray(f"gaps=0"))
+              + (f"  down={r.down}" if r.down else ""))
+        total_gaps += r.through
+        for g in r.gaps:
+            print(f"      {ui.green('GAP')} {g.token.name:20s}  ({g.token.kind})  "
+                  + ui.gray(f"template={g.template} payload={g.payload[:40]}"))
+        if r.seeds:
+            print(ui.info(f"    exploit seeds ({len(r.seeds)}):"))
+            for s in r.seeds[:10]:
+                print(f"      {ui.bold(s[:60])}")
+
+    print(ui.rule())
+    if total_gaps:
+        print(ui.green(f"  {total_gaps} token gaps found — seeds ready for search engine"))
+    else:
+        print(ui.gray("  no gaps found — WAF covers all tested dialect tokens"))
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        data = []
+        for r in reports:
+            data.append({
+                "engine": r.engine, "total": r.total,
+                "blocked": r.blocked, "through": r.through, "down": r.down,
+                "gaps": [{"token": g.token.name, "kind": g.token.kind,
+                          "template": g.template, "payload": g.payload,
+                          "code": g.code} for g in r.gaps],
+                "seeds": r.seeds,
+            })
+        _P(args.out).write_text(_json.dumps(data, indent=2, ensure_ascii=False))
+        print(ui.ok(f"libinjection-scan report written to {args.out}"))
+    return 0
+
+
 def cmd_cve_probe(args) -> int:
     if not args.target:
         print("[err] --target is required", file=sys.stderr)
@@ -664,6 +812,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="write Nuclei v3 differential WAF-audit templates (one per verified bypass) to DIR")
     b.set_defaults(func=cmd_bypass)
 
+    a = sub.add_parser("auto",
+                       help="guided wizard — answers a few questions, runs the full pipeline automatically")
+    a.add_argument("--url", default="", help="target URL (skips the interactive prompt)")
+    a.add_argument("--path", default="", help="request path")
+    a.add_argument("--param", default="q", help="parameter name")
+    a.add_argument("-y", "--yes", action="store_true",
+                   help="non-interactive: accept all defaults (requires --url)")
+    a.add_argument("--out", default="", help="write findings JSONL here")
+    a.add_argument("--timeout", type=int, default=10)
+    a.add_argument("--transport", default="curl", choices=["curl", "pooled"])
+    a.add_argument("--tls-verify", action="store_true")
+    a.add_argument("--block-signature", default="Request blocked by RedEye")
+    a.add_argument("--header", "-H", action="append", default=None)
+    a.add_argument("--cookie", default="")
+    a.set_defaults(func=cmd_auto)
+
     e = sub.add_parser("eval", help="score WAF coverage + false-positive rate over a corpus")
     _add_target_args(e)
     e.add_argument("--mock", action="store_true", help="use the built-in mock WAF")
@@ -717,6 +881,32 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--stall-factor", type=float, default=3.0,
                     help="flag a probe whose response is this-times slower than baseline")
     sm.set_defaults(func=cmd_smuggle)
+
+    sp = sub.add_parser("score-probe",
+                        help="map WAF scoring-engine detection thresholds and boundary payloads")
+    _add_target_args(sp)
+    sp.add_argument("--param", default="q", help="parameter to inject (default: q)")
+    sp.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                    help="where to place the probe (default: query)")
+    sp.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    sp.add_argument("--class", dest="attack_class", default="sqli",
+                    choices=["sqli", "xss", "ssti"],
+                    help="attack class to probe (default: sqli)")
+    sp.add_argument("--calibrate", action="store_true",
+                    help="learn the WAF block/pass signature first")
+    sp.add_argument("--out", default="", help="write JSON score-probe report here")
+    sp.set_defaults(func=cmd_score_probe)
+
+    lp = sub.add_parser("libinjection-scan",
+                        help="probe WAF for database-specific token blind spots (libinjection gaps)")
+    _add_target_args(lp)
+    lp.add_argument("--param", default="q", help="parameter to inject (default: q)")
+    lp.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                    help="where to place the probe (default: query)")
+    lp.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    lp.add_argument("--engines", default="", help="comma-separated DB engines (default: all)")
+    lp.add_argument("--out", default="", help="write JSON gap report here")
+    lp.set_defaults(func=cmd_libinjection_scan)
 
     cvp = sub.add_parser("cve-probe",
                          help="probe which 2026 WAF-engine CVE primitives look exploitable on a target")
