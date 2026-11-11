@@ -14,7 +14,8 @@ CMD_SEED = "; cat /etc/passwd"
 GENERIC_SEED = "' OR 1=1 AND cat /etc/passwd -- -"
 
 SQL_TAMPER_MUTATORS = [
-    "sql_between_comment", "sql_versioned_comment_mysql", "sql_versioned_comment_generic",
+    "sql_between_comment", "sql_adjacent_comment", "sql_adjacent_comment_keyword",
+    "sql_versioned_comment_mysql", "sql_versioned_comment_generic",
     "sql_keyword_case_random", "sql_space_mysql_comment", "sql_space_vtab", "sql_space_nbsp",
     "sql_space_tab", "sql_space_formfeed", "sql_space_plus", "sql_space_parens",
     "sql_equal_to_like", "sql_equal_to_between", "sql_and_to_ampamp", "sql_or_to_pipepipe",

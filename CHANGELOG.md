@@ -5,6 +5,25 @@ All notable changes to WAFFEN are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Three 2026 WAF-engine bypass primitives** added to the two search axes (each CVE
+  verified against public vuln databases before porting; all pure-stdlib):
+  - **`sql_adjacent_comment` / `sql_adjacent_comment_keyword`** mutators
+    (`mutate/sql_tamper.py`) — adjacent paired C-style comments `/**//**/` that exploit
+    ModSecurity's `t:removeComments` off-by-one (**CVE-2026-104259**, GHSA-qrch-pjfr-9g47):
+    after the first `/**/` is stripped the parser consumes the `/` opening the next
+    comment, so keyword tokens stay split for the WAF while the DB lexer reads it as
+    whitespace. Siblings of `sql_between_comment`; compose with every other SQLi mutator.
+  - **`mp_truncated`** transform (`core/transforms.py`, STRUCTURAL) — a multipart body
+    with no closing `--boundary--`, triggering Coraza's `io.ErrUnexpectedEOF` fail-open
+    (**CVE-2026-41508**, GHSA-r3rm-qphw-hh76; ≤3.8.0) where `MULTIPART_STRICT_ERROR`
+    (rules 200002/200003) never fires but tolerant backends still read the field.
+  - **`mp_filename_rfc2231`** transform (`core/transforms.py`, STRUCTURAL) — a benign
+    decoy `filename="decoy.txt"` plus the real payload in `filename*=UTF-8''…`, which the
+    WAF ignores and RFC 2231-aware backends honour (**CVE-2026-104269**).
+  - Registry 161 → 163 mutators; transforms 19 → 21 (structural 8 → 10). Tests in
+    `tests/test_structural.py` and `tests/test_mutators_expanded.py`.
+
 ## [0.2.0] — 2026-11-10
 
 Validated across **five WAFs and three detection models** (RedEye, OWASP CRS, BunkerWeb,

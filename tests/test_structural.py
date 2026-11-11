@@ -15,7 +15,7 @@ def _argv(name, payload="<script>alert(1)</script>"):
 
 def test_structural_set_selectable():
     sel = {t.name for t in T.select({"structural"})}
-    assert sel == T.STRUCTURAL and len(sel) == 8
+    assert sel == T.STRUCTURAL and len(sel) == 10
 
 
 def test_all_structural_registered_and_build():
@@ -53,3 +53,20 @@ def test_multipart_dup_disposition_has_two_lines():
 def test_xml_body_escapes_and_wraps():
     body = _argv("xml_body", "<x>")[-1]
     assert "<q>" in body and "&lt;x&gt;" in body           # payload XML-escaped inside <q>
+
+
+def test_mp_truncated_has_no_closing_boundary():
+    argv = _argv("mp_truncated", "PAY")
+    body = argv[-1]
+    assert "PAY" in body and body.endswith("PAY")          # unterminated: ends at the payload
+    assert "--WAFFENb0undary--" not in body                # no closing boundary -> ErrUnexpectedEOF
+    assert any("multipart/form-data; boundary=" in a for a in argv)
+
+
+def test_mp_filename_rfc2231_carries_payload_in_extended_param():
+    argv = _argv("mp_filename_rfc2231", "../x.jsp")
+    body = argv[-1]
+    assert 'filename="decoy.txt"' in body                  # benign decoy the WAF reads
+    assert "filename*=UTF-8''" in body                     # RFC 2231 extended param
+    assert "%2F" in body or "%2f" in body                  # payload percent-encoded (/ -> %2F)
+    assert body.rstrip().endswith("--WAFFENb0undary--")    # properly closed (unlike mp_truncated)
