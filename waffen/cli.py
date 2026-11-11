@@ -409,6 +409,37 @@ def cmd_fingerprint(args) -> int:
     return 0
 
 
+def cmd_cve_probe(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .recon.cve_probe import probe_cve_primitives
+    target = Target(base_url=args.target, path=args.path, param=args.param, inject=args.inject,
+                    method=args.method, timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("2026 WAF-engine CVE probe for ") + ui.bold(args.target)
+          + ui.gray(f"   inject {target.inject} {target.path} param={target.param!r}"))
+    print(ui.gray("  canary-token differentials; safe against an authorized target"))
+    print(ui.rule())
+    colour = {"PRESENT": ui.red, "ABSENT": ui.green, "INCONCLUSIVE": ui.gray}
+    probes = probe_cve_primitives(target)
+    for p in probes:
+        tag = colour.get(p.verdict, ui.gray)(f"{p.verdict:13}")
+        print(f"  {tag} {ui.bold(p.cve)}  {ui.gray(p.name)}")
+        print(ui.gray(f"       {p.detail}"))
+    present = [p for p in probes if p.verdict == "PRESENT"]
+    print(ui.rule())
+    if present:
+        print(ui.warn(f"{len(present)} primitive(s) look exploitable: ") + ", ".join(p.cve for p in present))
+        print(ui.gray("  confirm with: bypass --verify using the matching mutators/transforms"))
+    else:
+        print(ui.ok("no 2026 engine primitive looks exploitable on this endpoint"))
+    return 0
+
+
 def cmd_smuggle(args) -> int:
     if not args.target:
         print("[err] --target is required", file=sys.stderr)
@@ -686,6 +717,15 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("--stall-factor", type=float, default=3.0,
                     help="flag a probe whose response is this-times slower than baseline")
     sm.set_defaults(func=cmd_smuggle)
+
+    cvp = sub.add_parser("cve-probe",
+                         help="probe which 2026 WAF-engine CVE primitives look exploitable on a target")
+    _add_target_args(cvp)
+    cvp.add_argument("--param", default="q", help="parameter to inject (default: q)")
+    cvp.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                     help="where to place the probe (default: query)")
+    cvp.add_argument("--method", default="GET", help="HTTP method for query inject (default: GET)")
+    cvp.set_defaults(func=cmd_cve_probe)
 
     fp = sub.add_parser("fingerprint", help="identify the WAF in front of a target")
     _add_target_args(fp)

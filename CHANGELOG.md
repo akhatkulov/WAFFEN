@@ -44,6 +44,13 @@ All notable changes to WAFFEN are documented here. Format loosely follows
   baseline is blocked but the probe passes. A found bypass becomes a shareable, re-runnable
   regression test for confirming a virtual patch. Stdlib-only YAML; output passes
   `nuclei -validate`. Tests in `tests/test_nuclei_export.py`.
+- **Engine CVE probe** (`recon/cve_probe.py`, `cve-probe` subcommand): a safe,
+  canary-token behavioural differential that labels each 2026 primitive
+  **PRESENT / ABSENT / INCONCLUSIVE** on a live target (you can't read libmodsecurity's
+  version over the wire, but you can test its behaviour). Conservative by design — only a
+  clean backend response (2xx/3xx/404) counts as a pass; `400`/`414`/`5xx` are server
+  rejections, not bypasses — so it never false-positives. Tests in
+  `tests/test_cve_probe.py`; live triage recorded in `docs/VALIDATION.md` §7.2.
 
 ## [0.2.0] — 2026-11-10
 

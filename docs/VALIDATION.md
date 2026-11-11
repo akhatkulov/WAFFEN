@@ -328,6 +328,24 @@ version differs.
   the vulnerable engine, isolate the rule, drive it with WAFFEN mutators — is the
   template for these follow-ups.
 
+### 7.2 Engine CVE probe — honest triage, no false positives
+`waffen cve-probe` runs each primitive's canary differential against a live target and
+labels it PRESENT / ABSENT / INCONCLUSIVE. Run against the vulnerable 3.0.16 lab at the
+Juice Shop SQLi sink, it reports **no clean bypass** — which is correct and instructive:
+- `t:removeComments` → **ABSENT**: libinjection (942100) catches `UNION SELECT` with or
+  without comments, masking the transformation bug at a real SQLi endpoint — exactly why
+  §7.1 needs an isolated rule to demonstrate it.
+- truncated-multipart / `filename*` / PCRE-pad → **INCONCLUSIVE**: the probes drew `400`
+  / `500` / `414`, i.e. the *server* rejected the request shape (malformed body, backend
+  error, URI-too-long). The probe deliberately does **not** count those as a bypass — an
+  early build did, and it was a false-positive source; only a clean backend response
+  (2xx/3xx/404) now reads as "passed."
+- `t:base64DecodeExt` → **INCONCLUSIVE**: the sink doesn't base64-decode `q`, so the bug
+  can't be exercised here (correctly not reported as PRESENT).
+
+So the probe's value is trustworthy triage: it never cries wolf, and its PRESENT path is
+unit-tested against a simulated vulnerable engine (`tests/test_cve_probe.py`).
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
