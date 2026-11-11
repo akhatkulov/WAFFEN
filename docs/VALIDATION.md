@@ -384,6 +384,28 @@ confirmed, *version-independent* WAF-blinding primitive against stock `t:base64D
 fix. Exploitability still needs a tolerant backend to recover the payload the WAF never
 saw — the blinding is proven here; backend recovery is sink-dependent.
 
+## 8. RedEye vs the 2026 engine primitives — black-box, the team's own WAF
+Closing the loop: the §7 primitives were run against the team's live RedEye-protected
+demo (`https://juice-shop.redeyes.uz` — the Juice Shop SQLi sink behind RedEye) with
+`waffen cve-probe` (canary tokens, authorized target). **RedEye blocks all six**, from
+the network side:
+
+| primitive | baseline → probe |
+|---|---|
+| removeComments `/**//**/` (CVE-2026-104259) | `403 → 403` blocked |
+| truncated multipart (CVE-2026-41508) | `403 → 403` blocked |
+| RFC 2231 `filename*` (CVE-2026-104269) | `403 → 403` blocked |
+| `Content-Encoding: br` (CVE-2026-111497) | `403 → 403` (RedEye 403s the br body) |
+| `base64DecodeExt` `A==` (GHSA-4j47) | `403 → 403` blocked |
+| PCRE2 `@rxGlobal` pad (GHSA-5m93) | `403 → 000` (server rejected the ~8 KB URI — not a bypass) |
+
+Notable: stock ModSecurity **3.0.16 and 3.0.17 both** blank on an `A==` group (§7.4 — the
+WAF sees empty and passes), but RedEye blocked both the plain and the `A==`-prefixed
+base64 — stronger than stock ModSecurity on that primitive. This is a black-box
+confirmation of the white-box findings the RedEye engine team reported, consistent with
+§4 ("RedEye holds"). No weaponizable bypass; no heavy search was run (the demo is
+~10 s/request and auto-bans).
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline
