@@ -249,9 +249,19 @@ class Oracle:
 
     def _curl_send(self, payload: str) -> Response:
         cmd = self._build(payload)
+        # A transform may supply a binary body to pipe on stdin (e.g. a Brotli
+        # stream with NUL bytes that cannot ride in argv). Computed per request,
+        # so this stays concurrency-safe under send_many with no shared state.
+        rt = self.request_transform
+        stdin_bytes = rt.stdin(self.t, payload) if (rt is not None and
+                                                    getattr(rt, "stdin_fn", None)) else None
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=self.t.timeout + 5).stdout
+            if stdin_bytes is not None:
+                out = subprocess.run(cmd, capture_output=True, input=stdin_bytes,
+                                     timeout=self.t.timeout + 5).stdout.decode("utf-8", "replace")
+            else:
+                out = subprocess.run(cmd, capture_output=True, text=True,
+                                     timeout=self.t.timeout + 5).stdout
         except Exception:
             return Response(DOWN, "000", 0, 0.0, "")
         finally:

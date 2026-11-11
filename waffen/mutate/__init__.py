@@ -8,5 +8,6 @@ from . import path_cmd  # noqa: F401  (side effect: registers path/cmd mutators)
 from . import generic_extra  # noqa: F401  (side effect: registers generic mutators)
 from . import quickwin  # noqa: F401  (side effect: registers Phase B quick-win mutators)
 from . import advanced  # noqa: F401  (side effect: registers Phase B advanced mutators)
+from . import semantic_frag  # noqa: F401  (side effect: registers semantic fragmentation mutators)
 
 __all__ = ["REGISTRY", "Mutator", "Registry"]

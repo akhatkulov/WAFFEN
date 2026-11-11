@@ -284,6 +284,128 @@ not the WAF. Fixed: calibration now only overrides the signature verdict when co
 (`MIN_CALIBRATION_CONFIDENCE`), else it falls back to the signature — applied in the oracle and both
 eval/dataset classifiers (`tests/test_calibration_gate.py`). High-confidence WAFs are unaffected.
 
+## 7. 2026 WAF-engine CVE primitives — reproduced against a version-pinned engine
+
+The rolling `owasp/modsecurity-crs:nginx` now ships **libmodsecurity 3.0.17**, which
+already patches the 2026 transformation CVEs, so the standing lab (§6) cannot
+reproduce them. To validate the newly added primitives honestly, a second lab
+(`lab/modsec-vuln-compose.yml`) pins the **vulnerable** engine and runs it beside the
+patched one for a version-differential — same rule, same payload, only the engine
+version differs.
+
+### 7.1 CVE-2026-104259 (`t:removeComments` off-by-one) — reproduced + patch-verified
+- **Vulnerable engine obtained:** `owasp/modsecurity-crs:4.25.1-nginx-202609180209`
+  bundles **libmodsecurity 3.0.16** (confirmed: `libmodsecurity.so.3.0.16`); the rolling
+  tag is 3.0.17.
+- **Isolation:** stock CRS libinjection (942100) catches `UNION SELECT` regardless of
+  comments, which masks the transformation bug. So the probe uses a custom rule
+  (`lab/vuln-removecomments-rule.conf`) matching `@rx blockedtoken` after
+  `t:removeComments` on the non-SQL token `blockedtoken` — verified that a lone `/**/`
+  with no SQL keywords is **200** at PL1, so this rule is the only thing that can block.
+- **Payloads are produced by WAFFEN's own mutators** (`lab/vuln_repro.py`): seed
+  `"blocked token"` → `sql_between_comment` = `blocked/**/token`, `sql_adjacent_comment`
+  = `blocked/**//**/token`.
+- **Result** (`/rest/products/search?q=`):
+
+  | engine | baseline `blocked/**/token` | probe `blocked/**//**/token` |
+  |---|---|---|
+  | **libmodsecurity 3.0.16 (vulnerable)** | `403` blocked | **`200` — BYPASS** |
+  | **libmodsecurity 3.0.17 (patched)** | `403` blocked | `403` blocked |
+
+  Same rule and payloads on both; the adjacent-comment probe passes **only** on 3.0.16.
+  This both confirms WAFFEN's `sql_adjacent_comment` exploits CVE-2026-104259 and
+  verifies 3.0.17 is the fix. Reproduce:
+
+  ```
+  docker compose -f lab/modsec-vuln-compose.yml -p waffen-lab-vuln up -d
+  .venv/bin/python lab/vuln_repro.py      # -> PASS
+  docker compose -f lab/modsec-vuln-compose.yml -p waffen-lab-vuln down
+  ```
+- **Not yet reproduced here:** `mp_truncated` (Coraza CVE-2026-41508 — needs a pinned
+  vulnerable Coraza, a separate engine), `base64_malformed_prefix`/`brotli_body`
+  (need a sink that base64/br-decodes the param), and `sql_pcre_matchlimit_pad`
+  (needs a CRS rule whose regex exceeds `SecPcreMatchLimit`). The §7.1 method — pin
+  the vulnerable engine, isolate the rule, drive it with WAFFEN mutators — is the
+  template for these follow-ups.
+
+### 7.2 Engine CVE probe — honest triage, no false positives
+`waffen cve-probe` runs each primitive's canary differential against a live target and
+labels it PRESENT / ABSENT / INCONCLUSIVE. Run against the vulnerable 3.0.16 lab at the
+Juice Shop SQLi sink, it reports **no clean bypass** — which is correct and instructive:
+- `t:removeComments` → **ABSENT**: libinjection (942100) catches `UNION SELECT` with or
+  without comments, masking the transformation bug at a real SQLi endpoint — exactly why
+  §7.1 needs an isolated rule to demonstrate it.
+- truncated-multipart / `filename*` / PCRE-pad → **INCONCLUSIVE**: the probes drew `400`
+  / `500` / `414`, i.e. the *server* rejected the request shape (malformed body, backend
+  error, URI-too-long). The probe deliberately does **not** count those as a bypass — an
+  early build did, and it was a false-positive source; only a clean backend response
+  (2xx/3xx/404) now reads as "passed."
+- `t:base64DecodeExt` → **INCONCLUSIVE**: the sink doesn't base64-decode `q`, so the bug
+  can't be exercised here (correctly not reported as PRESENT).
+
+So the probe's value is trustworthy triage: it never cries wolf, and its PRESENT path is
+unit-tested against a simulated vulnerable engine (`tests/test_cve_probe.py`).
+
+### 7.3 Coraza CVE-2026-41508 — attempted, did NOT reproduce on 3.8.0/3.8.1 (honest)
+A version-differential was built for the Coraza truncated-multipart claim: a minimal
+Go `coraza/v3` filter (rule 200003, `MULTIPART_STRICT_ERROR`) compiled at **v3.8.0**
+and **v3.8.1**, fed a truncated `multipart/form-data` body (no closing `--boundary--`).
+**Both versions blocked it (403/403)** — the bypass did not reproduce.
+
+Reading the actual `internal/bodyprocessors/multipart.go` diff explains why: in
+**3.8.0** `io.ErrUnexpectedEOF` **already set** `MULTIPART_STRICT_ERROR` (so rule 200003
+fires); **3.8.1** only *refines* this (`flagUnexpectedEOF` now skips the flag when the
+body was truncated by `SecRequestBodyLimit`, i.e. `INBOUND_DATA_ERROR=1`, to avoid
+false-positives on oversized bodies), plus adds a `filename*`-continuation check and a
+quadratic-CPU fix. So the "3.8.0 fails open on truncation" description does not hold for
+these versions. **Conclusion:** `mp_truncated` stays a useful *probe* of any WAF's
+truncation handling, but it is **not** a confirmed CVE-2026-41508 bypass on 3.8.0/3.8.1
+— reported as a non-result rather than inflated into a bypass.
+
+### 7.4 GHSA-4j47-8qcr-jf59 (`t:base64DecodeExt`) — confirmed, but version-INDEPENDENT
+Same isolated setup as §7.1 (rule `9999002`, `@rx blockedtoken` after
+`t:base64DecodeExt` on the non-SQL token, both engines). WAFFEN's mutators drive it:
+`base64` = `YmxvY2tlZHRva2Vu` (baseline), `base64_malformed_prefix` =
+`A==YmxvY2tlZHRva2Vu` (probe).
+
+| payload | vuln 3.0.16 | patched 3.0.17 |
+|---|---|---|
+| plain base64 (baseline) | `403` | `403` |
+| `A==` + base64 (probe) | **`200`** | **`200`** |
+
+So the probe blinds `t:base64DecodeExt` and is let through — but on **both** engines.
+Direct probing showed a malformed `A==` group **anywhere** (prefix, middle, or suffix)
+blanks the decoded value on 3.0.16 *and* 3.0.17, while excess padding (`====`) still
+decodes on both. Unlike §7.1 this is therefore **not** a version-differential: a
+leading bad group has no preceding bytes for the 3.0.17 "preserve decoded bytes" fix
+to save, so both return empty. **Honest conclusion:** `base64_malformed_prefix` is a
+confirmed, *version-independent* WAF-blinding primitive against stock `t:base64DecodeExt`
+(stronger reach than a patch-gated bypass), but it does **not** demonstrate a 3.0.17
+fix. Exploitability still needs a tolerant backend to recover the payload the WAF never
+saw — the blinding is proven here; backend recovery is sink-dependent.
+
+## 8. RedEye vs the 2026 engine primitives — black-box, the team's own WAF
+Closing the loop: the §7 primitives were run against the team's live RedEye-protected
+demo (`https://juice-shop.redeyes.uz` — the Juice Shop SQLi sink behind RedEye) with
+`waffen cve-probe` (canary tokens, authorized target). **RedEye blocks all six**, from
+the network side:
+
+| primitive | baseline → probe |
+|---|---|
+| removeComments `/**//**/` (CVE-2026-104259) | `403 → 403` blocked |
+| truncated multipart (CVE-2026-41508) | `403 → 403` blocked |
+| RFC 2231 `filename*` (CVE-2026-104269) | `403 → 403` blocked |
+| `Content-Encoding: br` (CVE-2026-111497) | `403 → 403` (RedEye 403s the br body) |
+| `base64DecodeExt` `A==` (GHSA-4j47) | `403 → 403` blocked |
+| PCRE2 `@rxGlobal` pad (GHSA-5m93) | `403 → 000` (server rejected the ~8 KB URI — not a bypass) |
+
+Notable: stock ModSecurity **3.0.16 and 3.0.17 both** blank on an `A==` group (§7.4 — the
+WAF sees empty and passes), but RedEye blocked both the plain and the `A==`-prefixed
+base64 — stronger than stock ModSecurity on that primitive. This is a black-box
+confirmation of the white-box findings the RedEye engine team reported, consistent with
+§4 ("RedEye holds"). No weaponizable bypass; no heavy search was run (the demo is
+~10 s/request and auto-bans).
+
 ## Verdict
 - **Validated on two independent WAFs now:** RedEye (vendor target) and OWASP CRS /
   ModSecurity (industry standard). The fingerprint→calibrate→search→verify pipeline

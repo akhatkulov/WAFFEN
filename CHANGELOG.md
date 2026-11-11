@@ -5,6 +5,53 @@ All notable changes to WAFFEN are documented here. Format loosely follows
 
 ## [Unreleased]
 
+### Added
+- **Three 2026 WAF-engine bypass primitives** added to the two search axes (each CVE
+  verified against public vuln databases before porting; all pure-stdlib):
+  - **`sql_adjacent_comment` / `sql_adjacent_comment_keyword`** mutators
+    (`mutate/sql_tamper.py`) — adjacent paired C-style comments `/**//**/` that exploit
+    ModSecurity's `t:removeComments` off-by-one (**CVE-2026-104259**, GHSA-qrch-pjfr-9g47):
+    after the first `/**/` is stripped the parser consumes the `/` opening the next
+    comment, so keyword tokens stay split for the WAF while the DB lexer reads it as
+    whitespace. Siblings of `sql_between_comment`; compose with every other SQLi mutator.
+  - **`mp_truncated`** transform (`core/transforms.py`, STRUCTURAL) — a multipart body
+    with no closing `--boundary--`, triggering Coraza's `io.ErrUnexpectedEOF` fail-open
+    (**CVE-2026-41508**, GHSA-r3rm-qphw-hh76; ≤3.8.0) where `MULTIPART_STRICT_ERROR`
+    (rules 200002/200003) never fires but tolerant backends still read the field.
+  - **`mp_filename_rfc2231`** transform (`core/transforms.py`, STRUCTURAL) — a benign
+    decoy `filename="decoy.txt"` plus the real payload in `filename*=UTF-8''…`, which the
+    WAF ignores and RFC 2231-aware backends honour (**CVE-2026-104269**).
+  - **`brotli_body`** transform (`core/transforms.py`) — a `Content-Encoding: br`
+    request body, the compression blind spot behind Brotli "Node2Shell"
+    (**CVE-2026-111497**). WAFFEN is stdlib-only and Python ships no brotli, so a new
+    pure-Python **stored/uncompressed Brotli encoder** (`core/brotli_raw.py`) emits a
+    valid `br` stream (verified round-trip vs the `brotli` CLI and node). The binary
+    stream (NUL bytes) can't ride in argv, so `RequestTransform` gained an opt-in
+    `stdin_fn`: the Oracle pipes the bytes to curl via `--data-binary @-` per request
+    (concurrency-safe, no temp files). Proven end-to-end against a local server.
+  - **`base64_malformed_prefix`** mutator (`mutate/encoders.py`) — `base64(payload)`
+    behind a malformed `A==` padding group that blanks ModSecurity `t:base64DecodeExt`
+    (**GHSA-4j47-8qcr-jf59**) while tolerant backends still recover the payload.
+  - **`sql_pcre_matchlimit_pad`** mutator (`mutate/sql_tamper.py`) — appends ~8 KB of
+    comment-pattern filler (neutralised for the DB by a trailing ` -- ` comment) to push
+    a CRS regex past PCRE2's low `SecPcreMatchLimit`, tripping the `@rxGlobal` match-limit
+    fail-open (**GHSA-5m93-4h75-3p2w**).
+  - Registry 161 → 165 mutators; transforms 19 → 22 (structural 8 → 10). Tests in
+    `tests/test_structural.py`, `tests/test_mutators_expanded.py`, `tests/test_brotli_raw.py`.
+- **Nuclei differential exporter** (`report/nuclei.py`, `bypass --nuclei DIR`): turns
+  verified bypass findings into Nuclei v3 *differential* WAF-audit templates — request 1
+  the raw seed (should be blocked), request 2 the WAFFEN mutation, firing only if the
+  baseline is blocked but the probe passes. A found bypass becomes a shareable, re-runnable
+  regression test for confirming a virtual patch. Stdlib-only YAML; output passes
+  `nuclei -validate`. Tests in `tests/test_nuclei_export.py`.
+- **Engine CVE probe** (`recon/cve_probe.py`, `cve-probe` subcommand): a safe,
+  canary-token behavioural differential that labels each 2026 primitive
+  **PRESENT / ABSENT / INCONCLUSIVE** on a live target (you can't read libmodsecurity's
+  version over the wire, but you can test its behaviour). Conservative by design — only a
+  clean backend response (2xx/3xx/404) counts as a pass; `400`/`414`/`5xx` are server
+  rejections, not bypasses — so it never false-positives. Tests in
+  `tests/test_cve_probe.py`; live triage recorded in `docs/VALIDATION.md` §7.2.
+
 ## [0.2.0] — 2026-11-10
 
 Validated across **five WAFs and three detection models** (RedEye, OWASP CRS, BunkerWeb,

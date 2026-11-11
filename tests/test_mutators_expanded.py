@@ -14,7 +14,9 @@ CMD_SEED = "; cat /etc/passwd"
 GENERIC_SEED = "' OR 1=1 AND cat /etc/passwd -- -"
 
 SQL_TAMPER_MUTATORS = [
-    "sql_between_comment", "sql_versioned_comment_mysql", "sql_versioned_comment_generic",
+    "sql_between_comment", "sql_adjacent_comment", "sql_adjacent_comment_keyword",
+    "sql_pcre_matchlimit_pad",
+    "sql_versioned_comment_mysql", "sql_versioned_comment_generic",
     "sql_keyword_case_random", "sql_space_mysql_comment", "sql_space_vtab", "sql_space_nbsp",
     "sql_space_tab", "sql_space_formfeed", "sql_space_plus", "sql_space_parens",
     "sql_equal_to_like", "sql_equal_to_between", "sql_and_to_ampamp", "sql_or_to_pipepipe",
@@ -106,6 +108,30 @@ def test_generic_extra_mutators_change_seed_and_selectable_for_any_class():
         selected = {m.name for m in REGISTRY.select(attack_class=attack_class)}
         for name in GENERIC_EXTRA_MUTATORS:
             assert name in selected, f"{name} not selectable for {attack_class}"
+
+
+def test_base64_malformed_prefix_mutator():
+    import base64 as _b64
+    m = REGISTRY.get("base64_malformed_prefix")
+    payload = "<script>alert(1)</script>"
+    out = m.apply(payload)
+    assert out != payload and out.startswith("A==")          # malformed single-char padding group
+    assert _b64.b64decode(out[3:]).decode() == payload       # suffix is clean base64 of the payload
+    # encoder with classes='*' -> selectable under every attack class
+    for cls in ("SQL Injection", "XSS Injection", "Command Injection"):
+        assert "base64_malformed_prefix" in {x.name for x in REGISTRY.select(attack_class=cls)}
+
+
+def test_pcre_matchlimit_pad_mutator():
+    m = REGISTRY.get("sql_pcre_matchlimit_pad")
+    payload = "' OR 1=1-- -"
+    out = m.apply(payload)
+    assert out.startswith(payload)                 # payload kept intact at the head
+    assert len(out) - len(payload) >= 4096         # substantial filler to trip the step limit
+    assert " -- " in out                           # filler neutralised by a trailing SQL comment
+    sel_sql = {x.name for x in REGISTRY.select(attack_class="SQL Injection")}
+    sel_xss = {x.name for x in REGISTRY.select(attack_class="XSS Injection")}
+    assert "sql_pcre_matchlimit_pad" in sel_sql and "sql_pcre_matchlimit_pad" in sel_xss
 
 
 def test_deterministic_mutators_are_stable_across_calls():

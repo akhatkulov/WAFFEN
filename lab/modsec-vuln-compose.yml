@@ -1,0 +1,59 @@
+# WAFFEN *vulnerable-pinned* ModSecurity lab — reproduces the 2026 transformation
+# CVEs that the rolling `owasp/modsecurity-crs:nginx` (now libmodsecurity 3.0.17)
+# has already patched. The `crs-vuln` service is pinned to libmodsecurity **3.0.16**,
+# vulnerable to CVE-2026-104259 (t:removeComments off-by-one); `crs-patched` is the
+# rolling (3.0.17) engine, so the two give a clean version-differential on the SAME
+# rule and payload. Both mount an isolation probe rule (lab/vuln-removecomments-rule.conf).
+#
+# LOCAL BYPASS REPRODUCTION ONLY — crs-vuln is intentionally unpatched; do not deploy.
+# See docs/VALIDATION.md §7.
+#
+#   docker compose -f lab/modsec-vuln-compose.yml -p waffen-lab-vuln up -d
+#   .venv/bin/python lab/vuln_repro.py            # runs the version-differential
+#   docker compose -f lab/modsec-vuln-compose.yml -p waffen-lab-vuln down
+#
+# Separate project name / ports (18081 vuln, 18082 patched) from the patched lab (18080).
+services:
+  juiceshop:
+    image: bkimminich/juice-shop:latest
+    container_name: waffen-vuln-juiceshop
+    expose: ["3000"]
+    restart: unless-stopped
+
+  crs-vuln:
+    image: owasp/modsecurity-crs:4.25.1-nginx-202609180209  # libmodsecurity 3.0.16 (VULNERABLE)
+    container_name: waffen-vuln-crs
+    environment:
+      BACKEND: "http://juiceshop:3000"
+      PORT: "8080"
+      MODSEC_RULE_ENGINE: "On"
+      PARANOIA: "1"
+      BLOCKING_PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      ANOMALY_OUTBOUND: "4"
+      MODSEC_RESP_BODY_ACCESS: "On"
+    volumes:
+      - ./vuln-engine-rules.conf:/opt/owasp-crs/rules/zzz-waffen-engine-rules.conf:ro
+    ports:
+      - "18081:8080"
+    depends_on: [juiceshop]
+    restart: unless-stopped
+
+  crs-patched:
+    image: owasp/modsecurity-crs:nginx                       # libmodsecurity 3.0.17 (PATCHED)
+    container_name: waffen-vuln-crs-patched
+    environment:
+      BACKEND: "http://juiceshop:3000"
+      PORT: "8080"
+      MODSEC_RULE_ENGINE: "On"
+      PARANOIA: "1"
+      BLOCKING_PARANOIA: "1"
+      ANOMALY_INBOUND: "5"
+      ANOMALY_OUTBOUND: "4"
+      MODSEC_RESP_BODY_ACCESS: "On"
+    volumes:
+      - ./vuln-engine-rules.conf:/opt/owasp-crs/rules/zzz-waffen-engine-rules.conf:ro
+    ports:
+      - "18082:8080"
+    depends_on: [juiceshop]
+    restart: unless-stopped
