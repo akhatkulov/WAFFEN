@@ -380,7 +380,7 @@ def recommend_from_eval(eval_result: "EvalResult", *, endpoint: str = "",
                     f"({score.blocked} blocked / {score.through} through)."
                 )
             except Exception:
-                coverage_note = ""
+                coverage_note = ""  # coverage formatting fallback
 
         rationale = (
             f"Coverage eval found {len(samples)} payload(s) for {attack_class}"

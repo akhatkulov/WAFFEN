@@ -49,7 +49,9 @@ def finalize_finding(finding: "Finding", verify_fn) -> bool:
         finding.verified = bool(getattr(v, "exploitable", None))
         finding.confidence = getattr(v, "confidence", None)
         return finding.verified
-    except Exception:
+    except Exception as exc:
+        import sys
+        print(f"  [warn] verifier error: {exc}", file=sys.stderr)
         finding.verified = None
         return True  # don't let a verifier crash block a reported bypass
 
@@ -76,7 +78,7 @@ def _expand_frontier(frontier, mutators, visited: set[str]):
             try:
                 mp = m.apply(st.payload)
             except Exception:
-                continue
+                continue  # mutator crash — skip, don't break the search
             if not mp or mp == st.payload or mp in visited or mp in seen_batch:
                 continue
             seen_batch.add(mp)
@@ -133,8 +135,8 @@ def beam_search(oracle: Oracle, seed: str, mutators, *,
                     try:
                         mp = m.apply(st.payload)
                     except Exception:
-                        continue
-                    if not mp or mp == st.payload or mp in visited:
+                        continue  # mutator crash — skip, don't break the search
+                    if not mp or mp == st.payload or not mp.strip() or mp in visited:
                         continue
                     visited.add(mp)
                     resp = oracle.send(mp)

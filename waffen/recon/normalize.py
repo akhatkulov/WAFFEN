@@ -92,7 +92,7 @@ def learn_normalization(oracle: Oracle, *, triggers=None, probes=PROBES) -> Norm
         try:
             variant = fn(trigger)
         except Exception:
-            continue
+            continue  # normalization probe function crashed — skip
         if not variant or variant == trigger:
             continue
         resp = oracle.send(variant)

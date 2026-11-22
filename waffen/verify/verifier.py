@@ -411,7 +411,9 @@ def _sqli_deep_confirm(oracle, payload: str, attack_class: str):
         if hit is not None:
             return hit
         return _sqli_timing_confirm(oracle, payload, attack_class)
-    except Exception:
+    except Exception as exc:
+        import sys
+        print(f"  [warn] SQLi verifier error: {exc}", file=sys.stderr)
         return None
 
 
@@ -485,7 +487,7 @@ def _check_traversal(oracle, payload: str, attack_class: str) -> Verification:
             try:
                 decoded = base64.b64decode(padded, validate=False).decode("utf-8", errors="ignore")
             except Exception:
-                continue
+                continue  # malformed base64 blob — skip
             if "<?php" in decoded.lower() or "<?=" in decoded:
                 return Verification(True, 0.85,
                                      "base64 blob in response decodes to PHP source — "
@@ -597,7 +599,9 @@ def _fetch_headers(target, payload: str, timeout: int | None = None) -> str:
             if sep in out:
                 return out.split(sep, 1)[0]
         return out
-    except Exception:
+    except Exception as exc:
+        import sys
+        print(f"  [warn] header fetch failed: {exc}", file=sys.stderr)
         return ""
 
 

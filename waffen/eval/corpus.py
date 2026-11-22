@@ -160,7 +160,7 @@ def harvest(root, max_per_class: int = 0) -> dict[str, list[str]]:
         try:
             text = path.read_text(errors="replace")
         except Exception:
-            continue
+            continue  # unreadable corpus file — skip
         for p in _payloads(text, markdown=ext in DOC_EXTS):
             if p in s:
                 continue

@@ -46,7 +46,7 @@ def _decode(genome: Genome, seed: str, by_name: dict[str, object]) -> str:
         try:
             mp = m.apply(payload)
         except Exception:
-            continue
+            continue  # mutator crash — skip, don't break the search
         if not mp:
             continue
         payload = mp

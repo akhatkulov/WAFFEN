@@ -84,7 +84,7 @@ def best_first_search(oracle: Oracle, seed: str, mutators, *,
                 try:
                     mp = m.apply(st.payload)
                 except Exception:
-                    continue
+                    continue  # mutator crash — skip, don't break the search
                 if not mp or mp == st.payload or mem.is_dup(mp) or mem.looks_dead(mp):
                     continue
                 mem.add_seen(mp)
@@ -125,7 +125,7 @@ def best_first_search(oracle: Oracle, seed: str, mutators, *,
                 try:
                     mp = m.apply(st.payload)
                 except Exception:
-                    continue
+                    continue  # mutator crash — skip, don't break the search
                 if not mp or mp == st.payload or mem.is_dup(mp) or mem.looks_dead(mp):
                     continue
                 mem.add_seen(mp)  # marks it seen now, same as the sequential loop would

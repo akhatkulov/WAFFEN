@@ -932,7 +932,9 @@ def _curl_sender(target):
         try:
             out = subprocess.run(cmd, capture_output=True, text=True,
                                   timeout=t.timeout + 5).stdout
-        except Exception:
+        except Exception as exc:
+            import sys
+            print(f"  [warn] fingerprint probe failed: {exc}", file=sys.stderr)
             return FPResponse("000", "", {})
         return _parse_curl_i(out)
     return sender

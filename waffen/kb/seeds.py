@@ -240,12 +240,35 @@ def _load_kb_overlay() -> int:
     return added
 
 
+CLASS_ALIASES: dict[str, str] = {
+    "sqli": "SQL Injection",
+    "xss": "XSS Injection",
+    "cmdi": "Command Injection",
+    "traversal": "Directory Traversal",
+    "lfi": "File Inclusion",
+    "ssti": "SSTI",
+    "nosqli": "NoSQL Injection",
+    "upload": "Upload Insecure Files",
+    "crlf": "CRLF Injection",
+    "xxe": "XXE Injection",
+    "ssrf": "SSRF",
+    "redirect": "Open Redirect",
+    "ldap": "LDAP Injection",
+    "ssi": "SSI",
+}
+
+
+def resolve_class(name: str) -> str:
+    """Resolve a short alias to the canonical class name."""
+    return CLASS_ALIASES.get(name.lower().strip(), name)
+
+
 def classes() -> list[str]:
     return list(SEEDS.keys())
 
 
 def seeds_for(attack_class: str) -> list[str]:
-    return SEEDS.get(attack_class, [])
+    return SEEDS.get(resolve_class(attack_class), [])
 
 
 # Fold in any downloaded/updated KB seeds at import time (no-op when none present).

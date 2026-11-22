@@ -58,7 +58,7 @@ def send_raw(host: str, port: int, tls: bool, raw: bytes, timeout: float = 10.0,
             try:
                 sock.close()
             except Exception:
-                pass
+                pass  # cleanup: socket close must never crash
     except Exception as e:
         return {"status": "000", "elapsed": round(time.time() - start, 3), "body": "", "error": str(e)}
 

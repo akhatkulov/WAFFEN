@@ -225,6 +225,7 @@ def cmd_auto(args) -> int:
         tls_verify=args.tls_verify,
         cookie=args.cookie or "",
         headers=tuple(args.header or []),
+        reconstruct=args.reconstruct,
     )
     return run_auto(cfg)
 
@@ -645,8 +646,8 @@ def cmd_fingerprint(args) -> int:
         if plan["suggested_mutators"]:
             print(ui.info("worth trying    ") + ui.gray(", ".join(plan["suggested_mutators"])))
         print(ui.gray("  " + plan["note"]))
-    except Exception:
-        pass  # plan is a bonus; never let it break a plain fingerprint run
+    except Exception as exc:
+        print(f"  [warn] test plan generation failed: {exc}", file=sys.stderr)
     return 0
 
 
@@ -979,10 +980,10 @@ def _add_target_args(p):
                         "Threads through every inject mode and transform — run a search behind auth")
     p.add_argument("--cookie", default="", metavar="'a=1; b=2'",
                    help="cookie string sent with every request (session auth)")
-    p.add_argument("--transport", default="curl", choices=["curl", "pooled"],
-                   help="request transport: 'curl' (default, uniform, required for request "
-                        "transforms) or 'pooled' (keep-alive http.client — faster on long runs; "
-                        "falls back to curl for transform sends)")
+    p.add_argument("--transport", default="auto", choices=["auto", "curl", "pooled"],
+                   help="request transport: 'auto' (default, pooled for plain requests, curl for "
+                        "transforms), 'curl' (uniform subprocess), or 'pooled' (keep-alive "
+                        "http.client — faster, falls back to curl for transform sends)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1069,11 +1070,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="non-interactive: accept all defaults (requires --url)")
     a.add_argument("--out", default="", help="write findings JSONL here")
     a.add_argument("--timeout", type=int, default=10)
-    a.add_argument("--transport", default="curl", choices=["curl", "pooled"])
+    a.add_argument("--transport", default="auto", choices=["auto", "curl", "pooled"])
     a.add_argument("--tls-verify", action="store_true")
     a.add_argument("--block-signature", default="Request blocked by RedEye")
     a.add_argument("--header", "-H", action="append", default=None)
     a.add_argument("--cookie", default="")
+    a.add_argument("--no-reconstruct", dest="reconstruct", action="store_false", default=True,
+                   help="skip payload reconstruction from recon results")
     a.set_defaults(func=cmd_auto)
 
     w = sub.add_parser("watch",

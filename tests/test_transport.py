@@ -64,7 +64,16 @@ def test_http_spec_auth_cookie_merges_with_cookie_inject():
 
 def test_pooled_selected_as_sender():
     assert Oracle(Target(base_url="http://h"), transport="pooled")._sender.__name__ == "_pooled_send"
-    assert Oracle(Target(base_url="http://h"))._sender.__name__ == "_curl_send"      # default
+    # "auto" with no transform → pooled; "auto" with transform → curl
+    assert Oracle(Target(base_url="http://h"))._sender.__name__ == "_pooled_send"           # auto, no transform
+    assert Oracle(Target(base_url="http://h"), transport="curl")._sender.__name__ == "_curl_send"  # explicit curl
+
+    class _FakeTransform:
+        name = "fake"
+        def build(self, t, p): return None
+        def stdin(self, t, p): return None
+    assert Oracle(Target(base_url="http://h"), request_transform=_FakeTransform())._sender.__name__ == "_curl_send"  # auto + transform
+
     # explicit sender override still wins over transport
     mark = lambda p: Response("THROUGH", "200", 1, 0.0, "x")
     assert Oracle(Target(base_url="http://h"), sender=mark, transport="pooled")._sender is mark

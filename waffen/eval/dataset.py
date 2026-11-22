@@ -46,7 +46,7 @@ def _classify(resp, calibration) -> str:
         try:
             return calibration.classify(resp)
         except Exception:
-            pass
+            pass  # calibration classify fallback — use naive verdict below
     return _VERDICT_MAP.get(resp.verdict, "pass")
 
 

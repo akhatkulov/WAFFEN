@@ -23,17 +23,17 @@ from .search.mcts import mcts_search
 
 try:
     from .verify.verifier import verify as _verify
-except Exception:  # verifier optional
+except Exception:  # optional: verifier module not installed/broken
     _verify = None
 
 try:
     from .verify.calibrate import calibrate as _calibrate
-except Exception:  # calibration optional
+except Exception:  # optional: calibration module not installed/broken
     _calibrate = None
 
 try:
     from .recon.normalize import learn_normalization as _learn_norm, reorder_mutators as _reorder
-except Exception:  # learner optional
+except Exception:  # optional: normalize/learner module not installed/broken
     _learn_norm = None
     _reorder = None
 
@@ -50,6 +50,22 @@ def _mutators_for(attack_class: str, all_mutators: bool):
     if all_mutators or not attack_class:
         return REGISTRY.all()
     return REGISTRY.select(attack_class=attack_class)
+
+
+def _prefilter_mutators(mutators, seed_payload: str, on_event=None) -> list:
+    """Drop mutators that produce no change on the seed — they waste budget."""
+    useful = []
+    for m in mutators:
+        try:
+            variant = m.apply(seed_payload)
+            if variant and variant != seed_payload and variant.strip():
+                useful.append(m)
+        except Exception:
+            useful.append(m)
+    dropped = len(mutators) - len(useful)
+    if dropped and on_event:
+        on_event("prefilter", original=len(mutators), kept=len(useful), dropped=dropped)
+    return useful
 
 
 def run_bypass(target: Target, seeds, *, strategy: str = "beam",
@@ -107,6 +123,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
             mutators = _mutators_for(cls, all_mutators)
             if norm_profile is not None and _reorder is not None:
                 mutators = _reorder(mutators, norm_profile)
+            mutators = _prefilter_mutators(mutators, payload, on_event=on_event)
 
             # inline verifier: a THROUGH is confirmed exploitable before it counts
             # as a stop_on_first success, so the search does not halt on a dead bypass.
@@ -188,7 +205,8 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
             if on_event:
                 on_event("cross_axis", findings=len(ca_result.findings),
                          tested=ca_result.pairs_tested, budget_used=ca_result.requests)
-        except Exception:
-            pass  # cross-axis is a bonus; never break the main sweep
+        except Exception as exc:
+            import sys
+            print(f"  [warn] cross-axis failed: {exc}", file=sys.stderr)
 
     return runs

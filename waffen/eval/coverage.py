@@ -108,7 +108,7 @@ def _classify(resp, calibration):
         try:
             return calibration.classify(resp)  # block|pass|unresolved
         except Exception:
-            pass
+            pass  # calibration classify fallback — use naive verdict below
     # map naive verdict
     return {"BLOCKED": "block", "THROUGH": "pass", "DOWN": "down"}.get(resp.verdict, "pass")
 

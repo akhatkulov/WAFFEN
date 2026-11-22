@@ -117,7 +117,8 @@ class AdaptiveSearch:
             intel["calibration"] = cal
             stage.budget_used += 10
             self._emit("learn_calibrated", waf_detected=getattr(cal, "waf_detected", None))
-        except Exception:
+        except Exception as exc:
+            self._emit("learn_calibrate_error", error=str(exc))
             cal = None
 
         if budget >= 40:
@@ -129,8 +130,8 @@ class AdaptiveSearch:
                 intel["cluster_profile"] = profile
                 stage.budget_used += 20
                 self._emit("learn_clustered", n_clusters=len(getattr(profile, "clusters", [])))
-            except Exception:
-                pass
+            except Exception as exc:
+                self._emit("learn_cluster_error", error=str(exc))
 
         try:
             from ..recon.normalize import learn_normalization
@@ -139,8 +140,8 @@ class AdaptiveSearch:
             intel["normalization"] = norm
             stage.budget_used += budget - stage.budget_used
             self._emit("learn_normalized")
-        except Exception:
-            pass
+        except Exception as exc:
+            self._emit("learn_normalize_error", error=str(exc))
 
         stage.intel = intel
         return stage
@@ -150,7 +151,8 @@ class AdaptiveSearch:
     def _stage_score(self, budget: int, calibration=None,
                      attack_classes: Sequence[str] = ("sqli",)) -> StageResult:
         stage = StageResult(name="score_probe")
-        intel: dict = {"keyword_maps": {}, "boundary_payloads": [], "invisible_tokens": set()}
+        intel: dict = {"keyword_maps": {}, "score_results": {},
+                      "boundary_payloads": [], "invisible_tokens": set()}
 
         try:
             from ..recon.score_probe import ScoreProber
@@ -159,6 +161,7 @@ class AdaptiveSearch:
                 prober = ScoreProber(oracle)
                 result = prober.run(cls)
                 intel["keyword_maps"][cls] = result.keyword_map
+                intel["score_results"][cls] = result
                 for bp in result.boundary_payloads:
                     if bp.verdict == "THROUGH":
                         intel["boundary_payloads"].append((cls, bp.payload))
@@ -169,8 +172,9 @@ class AdaptiveSearch:
                 self._emit("score_probed", cls=cls,
                            detected=sum(1 for k in result.keyword_map if k.detected),
                            invisible=sum(1 for k in result.keyword_map if not k.detected))
-        except Exception:
-            pass
+        except Exception as exc:
+            import sys
+            print(f"  [!] score-probe error: {exc}", file=sys.stderr)
 
         stage.intel = intel
         return stage
@@ -191,22 +195,24 @@ class AdaptiveSearch:
             intel["gap_reports"] = reports
             total_gaps = sum(r.through for r in reports)
             self._emit("gaps_scanned", total_gaps=total_gaps)
-        except Exception:
+        except Exception as exc:
+            self._emit("gaps_scan_error", error=str(exc))
             reports = []
 
         try:
             from ..recon.reconstruct import PayloadReconstructor
             recon = PayloadReconstructor()
-            for r in reports:
-                recon.add_gap_report(r)
+            if reports:
+                recon.add_gap_reports(reports)
             if score_intel:
-                for cls, km_list in score_intel.get("keyword_maps", {}).items():
-                    recon.add_score_probe_keywords(km_list, cls)
-            seeds = recon.expand_all()
+                for cls, result in score_intel.get("score_results", {}).items():
+                    recon.add_score_probe(result)
+            seeds = recon.seeds()
             intel["reconstructed_seeds"] = seeds
             self._emit("reconstructed", n_seeds=len(seeds))
-        except Exception:
-            pass
+        except Exception as exc:
+            import sys
+            print(f"  [!] reconstruct error: {exc}", file=sys.stderr)
 
         stage.intel = intel
         return stage
@@ -227,8 +233,8 @@ class AdaptiveSearch:
             try:
                 from .gradient import GradientScorer
                 scorer = GradientScorer()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._emit("gradient_scorer_error", error=str(exc))
 
         all_seeds = []
         for cls in attack_classes:

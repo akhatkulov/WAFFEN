@@ -269,12 +269,12 @@ class GradientScorer:
 # ---- convenience: adapt an Oracle to use this scorer -----------------------
 
 def patch_oracle_scorer(oracle, scorer: GradientScorer):
-    """Monkey-patch an Oracle instance so its .score() uses the GradientScorer.
+    """Attach a GradientScorer to an Oracle instance so its .score() uses it.
     Returns the original score method for restoration."""
     original = oracle.score
 
     def _patched_score(resp, baseline):
         return scorer.score_response(resp, baseline)
 
-    oracle.score = staticmethod(_patched_score)
+    oracle.score = _patched_score
     return original

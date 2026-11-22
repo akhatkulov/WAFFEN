@@ -191,7 +191,7 @@ def mcts_search(oracle: Oracle, seed: str, mutators, *,
                 try:
                     cp = m.apply(node.payload)
                 except Exception:
-                    continue
+                    continue  # mutator crash — skip, don't break the search
                 if not cp or cp == node.payload or name in node.children:
                     continue
                 chain = node.chain + [name]
@@ -224,7 +224,7 @@ def mcts_search(oracle: Oracle, seed: str, mutators, *,
             try:
                 np_ = m.apply(cur_payload)
             except Exception:
-                continue
+                continue  # mutator crash — skip, don't break the search
             if not np_ or np_ == cur_payload:
                 continue
             cur_payload = np_

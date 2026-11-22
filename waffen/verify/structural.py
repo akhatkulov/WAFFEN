@@ -82,7 +82,7 @@ def landed(oracle, payload: str, *, marker: str | None = None) -> bool:
             return slice_ in body
         return False
     except Exception:
-        return False
+        return False  # reflection check must not crash verification
 
 
 def _reflection_probe(oracle, payload: str, attack_class: str) -> bool:

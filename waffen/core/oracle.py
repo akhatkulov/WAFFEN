@@ -126,12 +126,19 @@ class Oracle:
     def __init__(self, target: Target, sender=None, request_transform=None, calibration=None,
                  delay: float = 0.0, backoff: bool = True,
                  canary_payload: str | None = None, canary_every: int = 25,
-                 transport: str = "curl"):
+                 transport: str = "auto"):
         import threading as _threading
         self.t = target
         self.request_transform = request_transform
-        self.transport = transport
         self._tls = _threading.local()  # per-thread keep-alive connection (pooled transport)
+        # "auto": use pooled (keep-alive) when no structural transform is active,
+        # curl when a transform needs curl's features (custom argv).
+        if transport == "auto":
+            if request_transform is None:
+                transport = "pooled"
+            else:
+                transport = "curl"
+        self.transport = transport
         if sender is not None:
             self._sender = sender               # explicit override (mocks/tests) — wins
         elif transport == "pooled":
@@ -192,8 +199,9 @@ class Oracle:
                 and getattr(cal, "confidence", 0.0) >= self._MIN_CAL_CONFIDENCE):
             try:
                 resp.verdict = self._CAL_MAP.get(cal.classify(resp), resp.verdict)
-            except Exception:
-                pass
+            except Exception as exc:
+                import sys
+                print(f"  [warn] calibration classify failed: {exc}", file=sys.stderr)
         return resp
 
     # -- request building -----------------------------------------------------
@@ -262,7 +270,9 @@ class Oracle:
             else:
                 out = subprocess.run(cmd, capture_output=True, text=True,
                                      timeout=self.t.timeout + 5).stdout
-        except Exception:
+        except Exception as exc:
+            import sys
+            print(f"  [warn] curl send failed: {exc}", file=sys.stderr)
             return Response(DOWN, "000", 0, 0.0, "")
         finally:
             self._cleanup_tmp_files()  # any upload-probe temp file `_build` created
@@ -349,7 +359,7 @@ class Oracle:
             try:
                 conn.close()
             except Exception:
-                pass
+                pass  # cleanup: connection close must never crash
         sp = urllib.parse.urlsplit(self.t.url())
         host, port = sp.hostname, sp.port
         if sp.scheme == "https":
@@ -369,7 +379,7 @@ class Oracle:
             try:
                 conn.close()
             except Exception:
-                pass
+                pass  # cleanup: connection close must never crash
             self._tls.conn = None
 
     def _pooled_send(self, payload: str) -> "Response":
@@ -394,7 +404,10 @@ class Oracle:
                 text = raw.decode("utf-8", "replace")
                 return Response(self._classify(code, text), code, len(raw),
                                 _time.monotonic() - t0, text)
-            except Exception:
+            except Exception as exc:
+                if attempt == 2:
+                    import sys
+                    print(f"  [warn] pooled send failed: {exc}", file=sys.stderr)
                 self._close_conn()
         return Response(DOWN, "000", 0, _time.monotonic() - t0, "")
 
