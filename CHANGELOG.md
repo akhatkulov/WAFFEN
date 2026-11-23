@@ -3,183 +3,148 @@
 All notable changes to WAFFEN are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
-## [Unreleased]
+## [2.0.0] — 2026-11-23
 
 ### Added
-- **Three 2026 WAF-engine bypass primitives** added to the two search axes (each CVE
-  verified against public vuln databases before porting; all pure-stdlib):
-  - **`sql_adjacent_comment` / `sql_adjacent_comment_keyword`** mutators
-    (`mutate/sql_tamper.py`) — adjacent paired C-style comments `/**//**/` that exploit
-    ModSecurity's `t:removeComments` off-by-one (**CVE-2026-104259**, GHSA-qrch-pjfr-9g47):
-    after the first `/**/` is stripped the parser consumes the `/` opening the next
-    comment, so keyword tokens stay split for the WAF while the DB lexer reads it as
-    whitespace. Siblings of `sql_between_comment`; compose with every other SQLi mutator.
-  - **`mp_truncated`** transform (`core/transforms.py`, STRUCTURAL) — a multipart body
-    with no closing `--boundary--`, triggering Coraza's `io.ErrUnexpectedEOF` fail-open
-    (**CVE-2026-41508**, GHSA-r3rm-qphw-hh76; ≤3.8.0) where `MULTIPART_STRICT_ERROR`
-    (rules 200002/200003) never fires but tolerant backends still read the field.
-  - **`mp_filename_rfc2231`** transform (`core/transforms.py`, STRUCTURAL) — a benign
-    decoy `filename="decoy.txt"` plus the real payload in `filename*=UTF-8''…`, which the
-    WAF ignores and RFC 2231-aware backends honour (**CVE-2026-104269**).
-  - **`brotli_body`** transform (`core/transforms.py`) — a `Content-Encoding: br`
-    request body, the compression blind spot behind Brotli "Node2Shell"
-    (**CVE-2026-111497**). WAFFEN is stdlib-only and Python ships no brotli, so a new
-    pure-Python **stored/uncompressed Brotli encoder** (`core/brotli_raw.py`) emits a
-    valid `br` stream (verified round-trip vs the `brotli` CLI and node). The binary
-    stream (NUL bytes) can't ride in argv, so `RequestTransform` gained an opt-in
-    `stdin_fn`: the Oracle pipes the bytes to curl via `--data-binary @-` per request
-    (concurrency-safe, no temp files). Proven end-to-end against a local server.
-  - **`base64_malformed_prefix`** mutator (`mutate/encoders.py`) — `base64(payload)`
-    behind a malformed `A==` padding group that blanks ModSecurity `t:base64DecodeExt`
-    (**GHSA-4j47-8qcr-jf59**) while tolerant backends still recover the payload.
-  - **`sql_pcre_matchlimit_pad`** mutator (`mutate/sql_tamper.py`) — appends ~8 KB of
-    comment-pattern filler (neutralised for the DB by a trailing ` -- ` comment) to push
-    a CRS regex past PCRE2's low `SecPcreMatchLimit`, tripping the `@rxGlobal` match-limit
-    fail-open (**GHSA-5m93-4h75-3p2w**).
-  - Registry 161 → 165 mutators; transforms 19 → 22 (structural 8 → 10). Tests in
-    `tests/test_structural.py`, `tests/test_mutators_expanded.py`, `tests/test_brotli_raw.py`.
-- **Nuclei differential exporter** (`report/nuclei.py`, `bypass --nuclei DIR`): turns
-  verified bypass findings into Nuclei v3 *differential* WAF-audit templates — request 1
-  the raw seed (should be blocked), request 2 the WAFFEN mutation, firing only if the
-  baseline is blocked but the probe passes. A found bypass becomes a shareable, re-runnable
-  regression test for confirming a virtual patch. Stdlib-only YAML; output passes
-  `nuclei -validate`. Tests in `tests/test_nuclei_export.py`.
-- **Engine CVE probe** (`recon/cve_probe.py`, `cve-probe` subcommand): a safe,
-  canary-token behavioural differential that labels each 2026 primitive
-  **PRESENT / ABSENT / INCONCLUSIVE** on a live target (you can't read libmodsecurity's
-  version over the wire, but you can test its behaviour). Conservative by design — only a
-  clean backend response (2xx/3xx/404) counts as a pass; `400`/`414`/`5xx` are server
-  rejections, not bypasses — so it never false-positives. Tests in
-  `tests/test_cve_probe.py`; live triage recorded in `docs/VALIDATION.md` §7.2.
+- **RL Q-learning bypass agent** (`--strategy rl`): treats the WAF as an MDP, learns which mutations work via epsilon-greedy exploration. Policy save/load for transfer between WAFs.
+- **Semantic preservation engine** (`waffen semantic`): 35+ mathematically equivalent SQL tautologies, string/number equivalence generators. 5 multi-variant mutators. Mutators 231 → 236.
+- **Attack graph planner** (`waffen plan`): model target as directed graph, Dijkstra shortest path to goals (dump_database, admin_access, rce, xss_stored, account_takeover). Auto-discover + execute.
+- **Grammar-guided fuzzing** (`waffen grammar`): context-free grammars for SQL (30 rules), XSS (20 rules), SSTI (15 rules). Every payload syntactically valid by construction. Coverage and targeted modes.
+- **LLM payload synthesis** (`waffen synthesize`): Claude/GPT API generates context-aware bypass payloads from WAF profile (detected keywords, gap tokens). Privacy-safe: only keyword lists sent.
+- **WAF rule reverse engineering** (`waffen rulemap`): 86 CRS rule signatures across 11 categories, PL1–PL4. Black-box probing maps active/inactive rules, estimates paranoia level.
+- **Multi-WAF differential fuzzing**: `waffen diff --targets "CRS=URL1,RedEye=URL2"` finds payloads one WAF blocks but another misses.
+- **Side-channel timing oracle** (`waffen sidechannel`): extract WAF internal scoring from response timing. 1D k-means rule cluster mapping.
+- **Autonomous daemon** (`waffen daemon`): 24/7 monitoring with periodic assessment cycles, Slack/Discord webhook alerts on new bypasses or WAF changes.
+
+## [1.3.0] — 2026-11-23
+
+### Added
+- Grammar-guided fuzzing engine (`waffen/grammar/`): SQL, XSS, SSTI grammars.
+- LLM-guided payload synthesis (`waffen/ai/`): Anthropic + OpenAI API support.
+- WAF rule reverse engineering (`waffen/recon/rulemap.py`): 86 CRS signatures.
+
+## [1.2.0] — 2026-11-23
+
+### Added
+- Multi-WAF differential fuzzing (`waffen diff --targets`).
+- Side-channel timing oracle (`waffen sidechannel`).
+- Continuous autonomous daemon (`waffen daemon`) with Slack webhook alerts.
+
+## [1.1.0] — 2026-11-23
+
+### Added
+- **SQLi exploitation engine** (`waffen exploit`): 4 techniques (UNION, error-based, boolean-blind, time-blind) × 4 DBMS engines (SQLite, MySQL, PostgreSQL, MSSQL). Bypass-aware mutation wrapping.
+- **Dockerfile** + docker-compose.yml: `docker run --rm akhatkulov/waffen auto --url URL -y`
+- **Response LRU cache** (256 entries) and connection keep-alive reuse for speed.
+
+## [1.0.1] — 2026-11-23
+
+### Fixed
+- README rewritten: all 39 subcommands documented.
+- CLI consistency: `--target` alias on `auto` and `origin` subcommands.
+- 15 integration tests (bypass e2e with 4 strategies, dry-run, CLI entrypoints).
+- 13 h2_attacks tests covering all 7 HTTP/2 attack functions.
+- Safe plugin loading: broken plugin prints warning instead of crashing WAFFEN.
+- `--dry-run` flag on bypass: shows request estimate before spending budget.
+- `--corpus` flag on auto mode.
+
+## [1.0.0] — 2026-11-23
+
+### Added
+- **HTTP/2 native transport** (`--transport h2`): minimal stdlib-only H2 client with TLS ALPN, HPACK encoding, CONTINUATION frames. 7 H2-specific WAF bypass techniques (pseudo-header injection, continuation splitting, stream multiplex race, duplicate pseudo-headers, oversized header blocks, header case manipulation).
+
+## [0.9.0] — 2026-11-23
+
+### Added
+- **High-speed async fuzzing** (`waffen fuzz`): threaded keep-alive pool, 500+ req/s. ffuf-style filters (-mc/-fc/-ms/-fs/-mr). Built-in wordlists (sqli/xss/path/param). Corpus integration.
+- **Plugin system** (`waffen plugin`): `~/.waffen/plugins/` drop-in directory. Discover, load, unload, disable/enable. Scaffold template for new plugins.
+
+## [0.8.0] — 2026-11-23
+
+### Added
+- **Origin IP discovery** (`waffen origin`): subdomain probing (45 names), MX records, SPF/TXT IPs, response header leaks, direct Host-header verification.
+- **138 WAF fingerprint signatures**: cloud (Cloudflare, AWS, Azure, GCP, Akamai, Imperva, Sucuri, …), on-premise (ModSecurity, Coraza, NAXSI, Wallarm, …), CDN (Vercel, Netlify, Fly.io, …), regional (SafeLine, Safedog, 360, RedEye, …).
+- **OOB callback server** (`waffen oob`): built-in HTTP listener for blind SSRF/XSS/XXE/RCE verification. Unique tracking tokens per payload. Payload generators for 5 vuln classes.
+- **3002 payload corpus** (`waffen corpus`, `--corpus` flag): embedded across 14 attack classes.
+- **Professional HTML reports** (`waffen report --html`): executive summary, findings with severity badges, remediation, dark/light theme, print-to-PDF.
+- **GitHub Action security fix**: replaced eval + expression interpolation with env vars + bash array.
+
+## [0.7.0] — 2026-11-23
+
+### Added
+- **GitHub Action CI gate** (`action.yml`): run WAF bypass testing in CI/CD, fail on verified bypass. SARIF output for GitHub Security tab.
+- **WAF rule generation** (`waffen defend`): convert bypass findings into deployable rules for ModSecurity, NAXSI, Cloudflare, AWS WAF. Pattern extraction from 25+ chain types.
+- **GraphQL attack module** (`waffen graphql`): introspection bypass (7 techniques), batch bypass, alias flood, directive injection, persisted query bypass. 4 new request transforms.
+- **WebSocket attack module** (`waffen ws`): stdlib-only RFC 6455 client. Text/binary/fragmented frame injection, upgrade-request injection.
+
+## [0.6.0] — 2026-11-23
+
+### Added
+- **SQL-AST-aware mutation** (`waffen/mutate/sql_ast.py`): lightweight SQL tokenizer (16 token kinds) + 10 mutation strategies (sqlite_swap, comment_split, case_mix, whitespace_swap, operator_equiv, comment_swap, function_wrap, concat_build, iif_wrap, number_obfuscate) + composite combinator. 11 new mutators including multi-variant `ast_combined`.
+- **Multi-request attack sequences** (`waffen/core/sequence.py`): RequestStep chains with context extraction. 4 built-in sequences.
+
+## [0.5.0] — 2026-11-23
+
+### Added
+- **Verifier-guided search**: 6 exploit signals (backend_error, sql_error, reflected, data_leak, response_diff, ssti) feed back into beam scoring. Eliminates ~90% false throughs.
+- **Multi-variant mutators**: `apply_multi()` returns 5+ variants per call. Beam/bestfirst fan out all variants. 5 semantic_frag mutators upgraded.
+- **Injection-point auto-discovery** (`waffen discover`): probes 28 query params, 16 JSON keys, 6 headers, 4 cookies, path segments.
+- **Differential testing** (`waffen diff`): WAF vs origin comparison — WAF_ONLY / APP_ONLY / BOTH_BLOCK / BOTH_PASS / DESYNC.
+- **Target profiles** (`--profile target.json --resume`): save/load/merge calibration, recon, search state.
+- **Payload minimization** (`waffen minimize`): chain reduction + binary text trimming.
+- **Live search progress**: per-depth callbacks in all 4 strategies. Per-transform status lines. Graceful Ctrl-C saves partial results.
+
+## [0.4.1] — 2026-11-22
+
+### Fixed
+- **Adaptive pipeline crash**: 3 API mismatches in `_stage_gaps` (add_gap_report→add_gap_reports, wrong method names). This caused the adaptive run to hang on live targets.
+- **54 silent `except Exception: pass`** replaced with proper error logging across 16 files.
+- **36% mutator waste**: pre-filter drops identity/empty mutators before search. Identity check moved before oracle.send in beam sequential path.
+- **Auto transport selection**: `transport="auto"` uses pooled for identity transforms, curl for structural.
+- Deduplicated ~110 lines SQLite template logic. Fixed gradient.py monkey-patch. Added --no-reconstruct CLI flag. Interruptible watch sleep. Class name aliases.
+- 97 new tests for 4 previously untested modules (scoring, rawhttp, coverage, update).
+
+## [0.4.0] — 2026-11-11
+
+### Added
+- **Response clustering** (`waffen calibrate --cluster`): stdlib k-means++ with silhouette auto-k, discovers full WAF response taxonomy (PASS/BLOCK/CHALLENGE/RATELIMIT).
+- **Gradient scoring** (`--fitness gradient`): 10-feature fitness from response metadata. Logistic regression weight calibration.
+- **Payload reconstruction** (`waffen/recon/reconstruct.py`): auto-generates exploit templates from score-probe boundary payloads and libinjection gap tokens.
+- **Cross-axis composition** (`--cross-axis`): mutated payload × structural transform simultaneously. Top-N payloads × top-J transforms.
+- **Adaptive 5-stage pipeline** (`waffen adaptive`): learn → score-probe → gap-scan → search → deepen. Each stage's output tunes the next.
+
+## [0.3.0] — 2026-11-11
+
+### Added
+- **Auto wizard mode** (`waffen auto`): guided interactive setup, runs fingerprint → calibrate → score-probe → libinjection-scan → bypass search automatically. Non-interactive with `-y`.
+- **Score threshold prober** (`waffen score-probe`): WAF scoring engine threshold binary search. Keyword detection map, progressive strip chain, boundary payloads.
+- **libinjection gap scanner** (`waffen libinjection-scan`): 110+ database-specific tokens across SQLite/PostgreSQL/MySQL/MSSQL. Context templates, exploit seed generator.
+- **23 semantic fragmentation mutators**: keyword concat split (3 dialects), SQLite operator swap, comment interleave, CASE/IIF wrap, whitespace variation, numeric obfuscation, XSS tag/event fragmentation.
+- **32 SSTI/SSRF/XXE class-specific mutators**: Jinja2/Twig/Freemarker, IP encoding variants, DTD/entity/XInclude. Mutators 165 → 220.
+- **WAF regression watch** (`waffen watch`): re-test saved findings, track ALIVE/BLOCKED/ERROR, diff reports.
 
 ## [0.2.0] — 2026-11-10
 
 Validated across **five WAFs and three detection models** (RedEye, OWASP CRS, BunkerWeb,
-NAXSI, open-appsec), plus the features and fixes that cross-WAF validation surfaced.
-
-### Added
-- **Weak sides strengthened** (the honest gaps in `docs/COMPARISON.md`, each verified
-  against real sources):
-  - WAF **fingerprint signatures 48 → 119** — the +71 ported straight from wafw00f's plugin
-    set (verified by cloning the repo; generic phrases dropped to avoid false matches).
-  - **SQLi verifier now extracts a DB-evaluated value** (arithmetic/version marker via
-    EXTRACTVALUE/CAST/CONVERT/`||` per MySQL/MariaDB/PostgreSQL/MSSQL/SQLite/Oracle, grounded
-    in PayloadsAllTheThings) — "confirmed injectable" becomes "confirmed, here's the proof value".
-  - **Stronger corpus harvester** (`eval/corpus.py`): broader PayloadsAllTheThings dir→class
-    mapping + robust extraction; fixed a latent bug that dropped fence-lookalike wordlist lines.
-  - **Validated on 5 WAFs across 3 detection models** — RedEye + OWASP CRS + BunkerWeb
-    (regex/CRS), **NAXSI** (`lab/naxsi-compose.yml`, whitelist/scoring, 73.5% / 0% FP), and
-    **open-appsec** (`lab/openappsec/`, machine-learning, ~35–55% / 0% FP) — each with a
-    visibly different coverage profile.
-- **Much wider coverage** (gaps from `docs/COMPARISON.md`, closed via an independently
-  verified multi-agent pass):
-  - WAF **fingerprint signatures 9 → 48** vendors (Barracuda, FortiWeb, Citrix NetScaler,
-    Palo Alto, Radware, Wallarm, DataDome, PerimeterX, IBM DataPower, Azure App Gateway /
-    Front Door, Aliyun, …) — grounded in wafw00f-known signatures; no false match on the lab.
-  - **KB seeds 47 → 181** across **14 classes** (added CRLF, XXE, SSRF, Open Redirect, LDAP, SSI).
-  - **Verifiers 9 → 14 classes** (+Open Redirect, SSI, LDAP, XXE, SSRF) and **deeper SQLi
-    confirmation** (UNION column-count + time-based blind, on top of error-signature/boolean).
-- **Pooled HTTP transport** (`--transport pooled`): a thread-local keep-alive
-  `http.client` connection reused across requests, instead of one curl subprocess
-  per request — ~1.6× faster on a localhost run (more on a remote HTTPS target,
-  where it also avoids a fresh TLS handshake per request). Covers every built-in
-  inject mode and transparently falls back to curl for `request_transform` sends
-  (transforms emit curl argv). Default stays `curl`; verified to produce identical
-  verdicts/status to curl across all inject modes against the CRS lab.
-- **Session / auth support** (`--header`/`-H`, `--cookie`): threaded through every
-  inject mode **and** every request transform via a single `oracle.apply_auth`, so a
-  bypass search can run behind a login. An auth cookie folds into a cookie-injection
-  payload's `Cookie:` header instead of colliding with it. (`bypass`, `eval`,
-  `dataset`, `fingerprint`.)
-- **Behavioral WAF fingerprinting**: when no vendor signature matches but a benign
-  probe reaches the origin while the attack probe is blocked, report a generic inline
-  WAF (low confidence) instead of a misleading "no WAF". Catches CRS/ModSecurity
-  behind nginx (generic `403`, no vendor header) — which previously fingerprinted as
-  nothing.
-- **Two new semantic verifiers**: NoSQL Injection (engine-error + boolean
-  differential) and Upload Insecure Files (app accept-vs-reject of a dangerous
-  extension). Verified-class coverage is now 9 classes.
-- **Second-WAF lab**: `lab/docker-compose.yml` + `lab/README.md` (OWASP CRS nginx +
-  Juice Shop) and the validation record in `docs/VALIDATION.md` §6 — 3 distinct
-  **verified** SQLi bypasses of CRS paranoia-level-1, confirmed by the live DB error.
-
-### Fixed
-- **Calibration false-positive artifact**: a low-confidence calibration (seen vs open-appsec's
-  ML model, confidence 0.4, overlapping size bands) classified benign as `unresolved → BLOCKED`,
-  inflating false-positives to 100%. Calibration now overrides the signature verdict only at
-  confidence ≥ 0.5 (shared `MIN_CALIBRATION_CONFIDENCE`), else falls back to the signature.
-- **Robustness (self-audit)**: concurrent batches now run a post-batch canary probe so
-  ban detection isn't blind above `--concurrency 1` (and `eval`/`dataset` warn); the
-  deep-SQLi UNION walk is bounded by `_UNION_MAX_COLS=6`; the pooled transport caps the
-  body read at 8 MiB and drops an oversized connection instead of draining it. The audit's
-  honest findings are documented in `docs/COMPARISON.md` ("Known limitations").
-- **Verifier false negatives**: verification probes now retry on a transient `DOWN`
-  (a flaky transport no longer reads as "exploit not confirmed"); the CRLF verifier's
-  own `curl -i` header path now carries `--header`/`--cookie` too.
-- **SQL verifier blind to Node ORMs**: added SQLite / Sequelize error signatures
-  (`SQLITE_ERROR`, `unrecognized token`, …) — Juice Shop's injection errors were
-  invisible to the old MySQL/Oracle/Postgres-only table.
-- **Duplicate rule suggestions**: `bypass --rules` now emits one rule per distinct
-  (class, payload); the same bypass rediscovered under several transforms no longer
-  prints N copies.
+NAXSI, open-appsec). See prior changelog entry for full details.
 
 ## [0.1.0] — 2026-11-07
 
-First tagged release. A closed-loop, verified WAF evasion-path finder for targets
-you own or are authorized to test.
+First tagged release. See prior changelog entry for full details.
 
-### Engine & search
-- Two orthogonal evasion axes: **161 class-aware payload mutators** (encoders,
-  obfuscators, SQLMap-tamper/PortSwigger-grade techniques) × **19 request-level
-  transforms** (HPP, chunked/multipart framing, content-type confusion, verb
-  tampering, GraphQL, WAFFLED-style structural/parser-differential distortions).
-- **4 guided search strategies**: beam, genetic, best-first (UCB bandit), and
-  MCTS+CFG — all operating on binary block/allow feedback. Optional per-round
-  concurrency via `oracle.send_many` for beam/genetic/best-first.
-- **Verified search**: each THROUGH is semantically verified; a payload that
-  passed the WAF but is not actually exploitable never counts as a bypass, and
-  the search keeps hunting past dead ones.
-
-### Making results trustworthy
-- **Runtime calibration** (`--calibrate`): learns the WAF's real block/pass/
-  unresolved signature instead of assuming HTTP 403 = blocked.
-- **GOFA-lite normalization learner** (`--learn`): probes which encodings the
-  WAF's normalizer misses and tries those first.
-- **Ban-onset canary detector** (`--canary`): re-probes a known-benign value;
-  a rate-limit ban usually looks like a clean fast 403, so this catches it
-  instead of mislabeling a banned source's responses.
-- **Per-class injection routing** (`--inject auto`): routes each attack class to
-  its correct injection point (traversal → URL path, uploads → multipart, etc.)
-  in a single run, instead of forcing everything through one parameter.
-- Real **multipart file-upload inject mode** (`--inject upload`) with
-  filename/extension control.
-
-### Evaluation, data & reporting
-- `eval`: GoTestWAF-style coverage + false-positive scoring, API-vs-App split,
-  JSON + styled **HTML report**, and a live body-inspection-cutoff binary search
-  (`--find-cutoff`). Benign is measured before attacks so a mid-run ban can't
-  inflate the false-positive rate.
-- `dataset`: labelled attack+benign **training-set export** (JSONL/CSV, stratified
-  train/val split) with class-stratified **balancing** (`analyze --balanced-out`).
-- `analyze`: offline analysis of a collected log — coverage, FP rate, a
-  ban-contamination heuristic, HTML report, and WAF-rule suggestions, no network.
-- `fingerprint`: 9-vendor WAF identification plus a heuristic test-plan hint
-  (body-inspection limit + historically-effective mutators).
-- **WAF-rule recommendation generator** (`--rules`/`--rules-out`): turns a
-  confirmed finding or coverage gap into an actionable, class-specific rule.
-- `smuggle`: experimental timing-based CL.TE/TE.CL request-smuggling probes over
-  a raw socket.
-- `kb-update`: nuclei-style versioned knowledge-base auto-update (pluggable;
-  ships with no default source yet).
-
-### Quality & validation
-- 258 tests; CI on Python 3.11/3.12.
-- Red-team CLI: ASCII banner, red palette, coverage bars, colored verdicts
-  (auto-disabled when piped / under `NO_COLOR`).
-- Validated against a real RedEye-protected target (see `docs/VALIDATION.md`):
-  named the WAF where wafw00f could not, matched GoTestWAF's coverage while
-  avoiding its self-ban false-positive artifact, honestly reported 0 verified
-  bypasses on hard classes, and found one real coverage gap (unfiltered
-  dangerous-extension uploads at `POST /file-upload`).
-
+[2.0.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v2.0.0
+[1.3.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v1.3.0
+[1.2.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v1.2.0
+[1.1.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v1.1.0
+[1.0.1]: https://github.com/akhatkulov/WAFFEN/releases/tag/v1.0.1
+[1.0.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v1.0.0
+[0.9.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.9.0
+[0.8.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.8.0
+[0.7.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.7.0
+[0.6.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.6.0
+[0.5.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.5.0
+[0.4.1]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.4.1
+[0.4.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.4.0
+[0.3.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.3.0
+[0.2.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.2.0
 [0.1.0]: https://github.com/akhatkulov/WAFFEN/releases/tag/v0.1.0

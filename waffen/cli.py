@@ -745,6 +745,42 @@ def cmd_bypass(args) -> int:
         html_str = generate_html_report(all_f, cfg)
         write_html_report(html_str, args.html_report)
         print(ui.ok(f"HTML report written to {args.html_report}"))
+
+    if getattr(args, "csv", ""):
+        from .report.csv_export import write_findings_csv
+        csv_f = []
+        for run in runs:
+            for f in run.result.findings:
+                rec = f.as_dict()
+                rec["attack_class"] = run.attack_class
+                rec["transform"] = run.transform
+                v = run.verifications.get(f.payload)
+                if v is not None:
+                    rec["verified"] = getattr(v, "exploitable", False)
+                csv_f.append(rec)
+        write_findings_csv(csv_f, args.csv)
+        print(ui.ok(f"CSV findings written to {args.csv}"))
+
+    if getattr(args, "webhook", ""):
+        verified_count = sum(
+            1 for run in runs for f in run.result.findings
+            if run.verifications.get(f.payload) and getattr(run.verifications[f.payload], "exploitable", False)
+        )
+        if verified_count:
+            import urllib.request as _ureq
+            import json as _json
+            tgt = args.target or "mock"
+            msg = f":gun: *WAFFEN* found *{verified_count}* verified bypass(es) on `{tgt}`"
+            try:
+                _ureq.urlopen(_ureq.Request(
+                    args.webhook,
+                    data=_json.dumps({"text": msg}).encode(),
+                    headers={"Content-Type": "application/json"},
+                ), timeout=10)
+                print(ui.ok("Webhook notification sent"))
+            except Exception as exc:
+                print(f"  [warn] webhook failed: {exc}", file=sys.stderr)
+
     return 0
 
 
@@ -1847,6 +1883,12 @@ def cmd_report(args) -> int:
     write_html_report(html_str, args.html)
     print(ui.ok(f"HTML report written to {args.html}"))
     print(ui.gray("  Open in browser and print to PDF (Ctrl+P)"))
+
+    if getattr(args, "csv", ""):
+        from .report.csv_export import write_findings_csv
+        write_findings_csv(findings, args.csv)
+        print(ui.ok(f"CSV findings written to {args.csv}"))
+
     return 0
 
 
@@ -2512,7 +2554,8 @@ def _add_target_args(p):
     p.add_argument("--target", default="", help="base URL of a target you own/are authorized to test")
     p.add_argument("--path", default="/", help="request path on target")
     p.add_argument("--timeout", type=int, default=15)
-    p.add_argument("--block-signature", default="Request blocked by RedEye")
+    p.add_argument("--block-signature", default="",
+                   help="WAF block page signature (auto-detected via --calibrate if empty)")
     p.add_argument("--tls-verify", action="store_true",
                    help="enforce TLS certificate verification (default: off — for self-signed test targets)")
     p.add_argument("--header", "-H", action="append", default=None, metavar="'Name: Value'",
@@ -2609,6 +2652,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="(RL strategy) save the learned Q-table policy to a JSON file after the run")
     b.add_argument("--load-policy", default="", metavar="FILE",
                    help="(RL strategy) load a previously learned policy to warm-start the agent")
+    b.add_argument("--csv", default="", metavar="FILE",
+                   help="write findings CSV here (for spreadsheet users)")
+    b.add_argument("--webhook", default="", metavar="URL",
+                   help="send Slack/Discord notification on verified bypass (JSON payload to URL)")
     b.set_defaults(func=cmd_bypass)
 
     ad = sub.add_parser("adaptive",
@@ -2640,7 +2687,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--timeout", type=int, default=10)
     a.add_argument("--transport", default="auto", choices=["auto", "curl", "pooled", "h2"])
     a.add_argument("--tls-verify", action="store_true")
-    a.add_argument("--block-signature", default="Request blocked by RedEye")
+    a.add_argument("--block-signature", default="")
     a.add_argument("--header", "-H", action="append", default=None)
     a.add_argument("--cookie", default="")
     a.add_argument("--corpus", action="store_true",
@@ -2720,7 +2767,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="JSONL from `waffen bypass --out` to re-test differentially")
     df.add_argument("--timeout", type=int, default=15)
     df.add_argument("--tls-verify", action="store_true")
-    df.add_argument("--block-signature", default="Request blocked by RedEye")
+    df.add_argument("--block-signature", default="")
     df.add_argument("--header", "-H", action="append", default=None)
     df.add_argument("--cookie", default="")
     df.add_argument("--out", default="", help="write diff report JSONL here")
@@ -2941,6 +2988,8 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--classification", default="CONFIDENTIAL")
     rp.add_argument("--summary-only", action="store_true",
                     help="generate a 1-page summary card instead of full report")
+    rp.add_argument("--csv", default="", metavar="FILE",
+                    help="also write findings CSV here (for spreadsheet users)")
     rp.set_defaults(func=cmd_report)
 
     an = sub.add_parser("analyze", help="analyze a collected dataset/log JSONL offline (no network)")
