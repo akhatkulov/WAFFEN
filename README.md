@@ -6,7 +6,7 @@
 
 WAFFEN discovers *evasion paths* against Web Application Firewalls: given an
 attack payload the WAF blocks, it uses feedback-driven search (beam / genetic /
-best-first / MCTS / adaptive pipeline) over 231 mutators × 26 request transforms
+best-first / MCTS / adaptive pipeline) over 236 mutators × 26 request transforms
 to find a mutation chain that bypasses detection — so the coverage gap can be
 found and fixed. Built by the RedEye WAF team as a red-team / regression
 instrument.
@@ -32,12 +32,12 @@ waffen auto --target https://your-waf.example -y      # non-interactive
 
 | Metric | Count |
 |--------|-------|
-| Mutators | **231** (incl. SQL-AST, semantic fragmentation, SSTI/SSRF/XXE) |
+| Mutators | **236** (incl. SQL-AST, semantic fragmentation, SSTI/SSRF/XXE) |
 | Request transforms | **26** (HTTP, multipart, JSON, GraphQL, brotli, H2) |
 | Search strategies | **5** (beam, genetic, best-first, MCTS, adaptive) |
 | WAF fingerprint signatures | **138** (cloud, on-prem, CDN, regional) |
 | Payload corpus | **3002** across 16 attack classes |
-| Tests | **1527** |
+| Tests | **1931** |
 | Subcommands | **31** |
 
 ---
@@ -104,7 +104,7 @@ waffen auto --target https://your-waf.example -y      # non-interactive
 
 | Command | Description |
 |---------|-------------|
-| `mutators` | List the 231 built-in mutators (filterable by `--class`) |
+| `mutators` | List the 236 built-in mutators (filterable by `--class`) |
 | `transforms` | List the 26 request-level transforms |
 | `kb-update` | Check/apply a knowledge-base update from a configured source |
 | `plugin` | Manage community plugins (~/.waffen/plugins/) — list, create, enable, disable |
