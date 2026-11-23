@@ -9,17 +9,17 @@
   <text x="370" y="116" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="12.5" fill="#f85149" xml:space="preserve"> ╚███╔███╔╝██║  ██║██║     ██║     ███████╗██║ ╚████║</text>
   <text x="370" y="132" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="12.5" fill="#f85149" xml:space="preserve">  ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝     ╚═╝     ╚══════╝╚═╝  ╚═══╝</text>
 
-  <!-- Rifle ASCII art — dark red -->
-  <text x="370" y="167" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="10" fill="#8b2520" xml:space="preserve">.______________________________________________________|_._._._._._._._._._.  </text>
-  <text x="370" y="179" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="10" fill="#8b2520" xml:space="preserve"> \_____________________________________________________|_#_#_#_#_#_#_#_#_#_|</text>
-  <text x="370" y="191" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="10" fill="#8b2520" xml:space="preserve">                                                       l                    </text>
+  <!-- Rifle ASCII art -->
+  <text x="370" y="167" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="10" fill="#f85149" xml:space="preserve">.______________________________________________________|_._._._._._._._._._.  </text>
+  <text x="370" y="179" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="10" fill="#f85149" xml:space="preserve"> \_____________________________________________________|_#_#_#_#_#_#_#_#_#_|</text>
+  <text x="370" y="191" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="10" fill="#f85149" xml:space="preserve">                                                       l                    </text>
 
   <!-- Author -->
   <text x="40" y="222" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="12" font-weight="700" fill="#f85149">By Akhatkulov (Me262) — Offensive Security Engineer</text>
 
   <!-- Subtitle + eye + version -->
   <text x="40" y="242" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="11" fill="#8b949e">AI-powered WAF bypass research platform</text>
-  <text x="430" y="242" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="11" fill="#8b2520">( ◉ )</text>
+  <text x="430" y="242" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="11" fill="#f85149">( ◉ )</text>
   <text x="478" y="242" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="11" fill="#6e7681">· authorized targets only</text>
   <text x="690" y="242" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="12" font-weight="700" fill="#f85149">v2.2.1</text>
 
@@ -31,7 +31,7 @@
   <text x="110" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="9" fill="#8b949e">mutators</text>
   <line x1="162" y1="268" x2="162" y2="292" stroke="#30363d" stroke-width="1"/>
 
-  <text x="196" y="285" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="700" fill="#ff8b3d">2170</text>
+  <text x="196" y="285" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="700" fill="#f85149">2170</text>
   <text x="233" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="9" fill="#8b949e">tests</text>
   <line x1="272" y1="268" x2="272" y2="292" stroke="#30363d" stroke-width="1"/>
 
@@ -39,7 +39,7 @@
   <text x="318" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="9" fill="#8b949e">cmds</text>
   <line x1="358" y1="268" x2="358" y2="292" stroke="#30363d" stroke-width="1"/>
 
-  <text x="390" y="285" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="700" fill="#ff8b3d">138</text>
+  <text x="390" y="285" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="700" fill="#f85149">138</text>
   <text x="416" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="9" fill="#8b949e">WAFs</text>
   <line x1="455" y1="268" x2="455" y2="292" stroke="#30363d" stroke-width="1"/>
 
@@ -47,11 +47,11 @@
   <text x="525" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="9" fill="#8b949e">payloads</text>
   <line x1="583" y1="268" x2="583" y2="292" stroke="#30363d" stroke-width="1"/>
 
-  <text x="610" y="285" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="700" fill="#ff8b3d">7</text>
+  <text x="610" y="285" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="700" fill="#f85149">7</text>
   <text x="624" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="9" fill="#8b949e">strategies</text>
   <line x1="688" y1="268" x2="688" y2="292" stroke="#30363d" stroke-width="1"/>
 
-  <text x="700" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="700" fill="#3fb950">0</text>
+  <text x="700" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="700" fill="#f85149">0</text>
   <text x="710" y="285" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="9" fill="#8b949e">bugs</text>
 
   <!-- Terminal prompt -->
