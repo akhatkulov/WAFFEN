@@ -1,0 +1,49 @@
+name: WAF Bypass Test (example)
+
+# Example workflow showing how to use WAFFEN as a CI gate.
+# Copy this to your own repo and configure the secrets.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'WAF-protected staging URL'
+        required: true
+      class:
+        description: 'Attack class'
+        default: 'sqli'
+
+jobs:
+  waf-test:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write  # for SARIF upload
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run WAFFEN bypass test
+        uses: akhatkulov/WAFFEN@main
+        id: waffen
+        with:
+          target: ${{ github.event.inputs.target || secrets.STAGING_WAF_URL }}
+          path: '/rest/products/search'
+          param: 'q'
+          class: ${{ github.event.inputs.class || 'sqli' }}
+          max-requests: '300'
+          fail-on-bypass: 'true'
+          sarif: 'waffen.sarif'
+
+      - name: Upload SARIF to GitHub Security
+        if: always() && hashFiles('waffen.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: waffen.sarif
+          category: waffen-waf-bypass
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### WAFFEN Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Findings: ${{ steps.waffen.outputs.findings }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Verified bypasses: ${{ steps.waffen.outputs.verified }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Result: ${{ steps.waffen.outputs.result }}" >> $GITHUB_STEP_SUMMARY

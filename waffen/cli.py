@@ -523,6 +523,51 @@ def cmd_bypass(args) -> int:
             print(ui.ok(f"{len(paths)} Nuclei audit template(s) written to {args.nuclei}/"))
         else:
             print("\n" + ui.gray("(no verified-exploitable findings — no Nuclei templates emitted)"))
+
+    if getattr(args, "sarif", ""):
+        from .report import sarif as sarif_report
+        all_findings = []
+        for run in runs:
+            for f in run.result.findings:
+                if not getattr(f, "attack_class", ""):
+                    f.attack_class = run.attack_class
+                all_findings.append(f)
+        sarif_report.write_sarif(all_findings, args.target or "mock://local", args.sarif)
+        print(ui.ok(f"SARIF report written to {args.sarif}"))
+
+    if getattr(args, "defend", ""):
+        from .report import defend as defend_report
+        d_findings = []
+        d_seen: set = set()
+        for run in runs:
+            for f in run.result.findings:
+                if not f.verified:
+                    continue
+                key = (run.attack_class, f.payload)
+                if key in d_seen:
+                    continue
+                d_seen.add(key)
+                if not getattr(f, "attack_class", ""):
+                    f.attack_class = run.attack_class
+                d_findings.append(f)
+        if d_findings:
+            engine = args.defend.strip().lower()
+            if engine == "all":
+                out_dir = args.defend_out or "waffen-rules"
+                paths = defend_report.write_all_engines(
+                    defend_report.generate_rules(d_findings), out_dir)
+                print(ui.ok(f"defense rules written to {out_dir}/ ({len(paths)} files)"))
+            else:
+                rules = defend_report.generate_rules(d_findings, engine)
+                rendered = defend_report.render_rules(rules, engine)
+                if args.defend_out:
+                    defend_report.write_rules(rules, args.defend_out, engine)
+                    print(ui.ok(f"{len(rules)} {engine} defense rule(s) written to {args.defend_out}"))
+                else:
+                    print("\n" + ui.rule(f"DEFENSE RULES ({engine.upper()})"))
+                    print(rendered)
+        else:
+            print("\n" + ui.gray("(no verified-exploitable findings — no defense rules generated)"))
     return 0
 
 
@@ -914,6 +959,151 @@ def cmd_sequence(args) -> int:
     return 0
 
 
+def cmd_graphql(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    target = Target(base_url=args.target, path=args.path, timeout=args.timeout,
+                    tls_verify=args.tls_verify, block_signature=args.block_signature,
+                    **_auth_kwargs(args))
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("graphql for ") + ui.bold(args.target))
+    print(ui.rule())
+
+    if args.introspect:
+        from .graphql.introspect import introspect, probe_introspection_bypass
+        print(ui.info("introspection probe"))
+        result = introspect(target)
+        if result.success:
+            print(f"  {ui.green('+')} schema exposed ({len(result.types)} types)")
+            for t in result.types[:15]:
+                print(f"      {t}")
+            if len(result.types) > 15:
+                print(f"      ... ({len(result.types)} total)")
+        else:
+            print(f"  {ui.yellow('?')} direct introspection blocked — trying bypasses")
+            bypasses = probe_introspection_bypass(target)
+            for bp in bypasses:
+                icon = ui.green("+") if bp.success else ui.gray("-")
+                print(f"  {icon} {bp.bypass_used}: {'EXPOSED' if bp.success else 'blocked'}")
+        return 0
+
+    payload = args.payload or "' OR 1=1--"
+    from .graphql import attacks
+    techniques = []
+    if args.batch or args.all_techniques:
+        print(ui.info("batch bypass"))
+        r = attacks.batch_bypass(target, payload)
+        techniques.append(r)
+        icon = ui.red("BLOCKED") if r.waf_blocked else ui.green("PASSED")
+        print(f"  {icon} batch: {r.code}")
+
+    if args.alias_flood or args.all_techniques:
+        n = args.alias_count
+        print(ui.info(f"alias flood (n={n})"))
+        r = attacks.alias_flood(target, payload, n=n)
+        techniques.append(r)
+        icon = ui.red("BLOCKED") if r.waf_blocked else ui.green("PASSED")
+        print(f"  {icon} alias_flood: {r.code}")
+
+    if args.directive or args.all_techniques:
+        print(ui.info("directive injection"))
+        r = attacks.directive_injection(target, payload)
+        techniques.append(r)
+        icon = ui.red("BLOCKED") if r.waf_blocked else ui.green("PASSED")
+        print(f"  {icon} directive: {r.code}")
+
+    if args.persisted or args.all_techniques:
+        print(ui.info("persisted query"))
+        r = attacks.persisted_query_bypass(target, payload)
+        techniques.append(r)
+        icon = ui.red("BLOCKED") if r.waf_blocked else ui.green("PASSED")
+        print(f"  {icon} persisted: {r.code}")
+
+    if args.field_leak or args.all_techniques:
+        print(ui.info("field suggestion leak"))
+        r = attacks.field_suggestion_leak(target)
+        techniques.append(r)
+        icon = ui.green("+") if "Did you mean" in r.body else ui.gray("-")
+        print(f"  {icon} field_leak: {r.code}")
+
+    if not techniques:
+        print(ui.gray("  specify --introspect, --batch, --alias-flood, --directive, --persisted, --field-leak, or --all"))
+        return 2
+
+    print(ui.rule())
+    passed = sum(1 for t in techniques if not t.waf_blocked)
+    print(f"  {passed}/{len(techniques)} techniques passed WAF")
+    return 0
+
+
+def cmd_ws(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    target = Target(base_url=args.target, path=args.path or "/", timeout=args.timeout,
+                    tls_verify=args.tls_verify, block_signature=args.block_signature,
+                    extra_headers=tuple(args.header or ()))
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("websocket for ") + ui.bold(args.target))
+    print(ui.rule())
+
+    payload = args.payload or "' OR 1=1--"
+    ws_path = args.ws_path
+    from .ws import attacks as ws_attacks
+
+    results = []
+    if args.text or args.all_techniques:
+        print(ui.info("text frame injection"))
+        r = ws_attacks.ws_inject(target, payload, ws_path=ws_path)
+        results.append(r)
+        if not r.connected:
+            print(f"  {ui.red('!')} connection failed")
+        else:
+            icon = ui.red("BLOCKED") if r.waf_blocked else ui.green("ALIVE")
+            print(f"  {icon} text inject: conn_alive={r.connection_alive}")
+
+    if args.binary or args.all_techniques:
+        print(ui.info("binary frame injection"))
+        r = ws_attacks.ws_binary_inject(target, payload, ws_path=ws_path)
+        results.append(r)
+        if r.connected:
+            icon = ui.red("BLOCKED") if r.waf_blocked else ui.green("ALIVE")
+            print(f"  {icon} binary inject: conn_alive={r.connection_alive}")
+        else:
+            print(f"  {ui.red('!')} connection failed")
+
+    if args.fragment or args.all_techniques:
+        print(ui.info("fragmented frame injection"))
+        r = ws_attacks.ws_fragment_inject(target, payload, ws_path=ws_path)
+        results.append(r)
+        if r.connected:
+            icon = ui.red("BLOCKED") if r.waf_blocked else ui.green("ALIVE")
+            print(f"  {icon} fragment inject: conn_alive={r.connection_alive}")
+        else:
+            print(f"  {ui.red('!')} connection failed")
+
+    if args.upgrade or args.all_techniques:
+        print(ui.info("upgrade URL injection"))
+        r = ws_attacks.ws_upgrade_inject(target, payload)
+        results.append(r)
+        icon = ui.red("BLOCKED") if r.waf_blocked else ui.green("PASSED")
+        print(f"  {icon} upgrade inject: connected={r.connected}")
+
+    if not results:
+        print(ui.gray("  specify --text, --binary, --fragment, --upgrade, or --all"))
+        return 2
+
+    print(ui.rule())
+    passed = sum(1 for r in results if not r.waf_blocked)
+    print(f"  {passed}/{len(results)} techniques passed WAF")
+    return 0
+
+
 def cmd_discover(args) -> int:
     if not args.target:
         print("[err] --target is required", file=sys.stderr)
@@ -1145,6 +1335,63 @@ def cmd_smuggle(args) -> int:
     return 0
 
 
+def cmd_defend(args) -> int:
+    from .report import defend as defend_report
+    import json as _json
+    from types import SimpleNamespace
+
+    findings = []
+    with open(args.findings) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            # Reconstruct a Finding-like object from JSONL
+            findings.append(SimpleNamespace(
+                payload=d.get("payload", d.get("bypass_payload", "")),
+                chain=d.get("chain", []),
+                attack_class=d.get("attack_class", ""),
+                verified=d.get("verified_exploitable", d.get("verified", None)),
+                confidence=d.get("verify_confidence", d.get("confidence", None)),
+                code=d.get("http_code", d.get("code", "")),
+            ))
+
+    if not findings:
+        print(ui.warn("no findings loaded from " + args.findings))
+        return 1
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("defend — ") + ui.bold(f"{len(findings)} finding(s)") +
+          ui.gray(f"  engine={args.engine}  source={args.findings}"))
+    print(ui.rule())
+
+    engine = args.engine.strip().lower()
+
+    if engine == "all":
+        out_dir = args.out or "waffen-rules"
+        rules = defend_report.generate_rules(findings)
+        paths = defend_report.write_all_engines(rules, out_dir)
+        for p in paths:
+            print(f"  {ui.green('+')} {p}")
+        print(ui.ok(f"{len(rules)} rule(s) × {len(paths)} engines written to {out_dir}/"))
+    else:
+        rules = defend_report.generate_rules(findings, engine)
+        rendered = defend_report.render_rules(rules, engine)
+        if args.out:
+            defend_report.write_rules(rules, args.out, engine)
+            print(ui.ok(f"{len(rules)} {engine} rule(s) written to {args.out}"))
+        else:
+            print(rendered)
+
+    return 0
+
+
 def cmd_analyze(args) -> int:
     from pathlib import Path as _P
     from .report import analyze as az
@@ -1357,6 +1604,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "resume with --resume to skip completed transforms")
     b.add_argument("--resume", action="store_true",
                    help="resume from --profile: skip already-completed transforms")
+    b.add_argument("--sarif", default="", metavar="FILE",
+                   help="write SARIF 2.1.0 report here (for GitHub Security tab)")
+    b.add_argument("--defend", default="", metavar="ENGINE",
+                   help="generate deployable WAF rules from verified bypasses "
+                        "(modsecurity/naxsi/cloudflare/aws/all)")
+    b.add_argument("--defend-out", default="", metavar="PATH",
+                   help="file or directory for --defend output (default: stdout)")
     b.set_defaults(func=cmd_bypass)
 
     ad = sub.add_parser("adaptive",
@@ -1445,6 +1699,31 @@ def build_parser() -> argparse.ArgumentParser:
     df.add_argument("--cookie", default="")
     df.add_argument("--out", default="", help="write diff report JSONL here")
     df.set_defaults(func=cmd_diff)
+
+    gql = sub.add_parser("graphql", help="GraphQL attack techniques: introspection, batching, alias flood")
+    _add_target_args(gql)
+    gql.add_argument("--payload", default="", help="injection payload")
+    gql.add_argument("--introspect", action="store_true", help="probe for schema introspection")
+    gql.add_argument("--batch", action="store_true", help="batching bypass (payload in 2nd query)")
+    gql.add_argument("--alias-flood", action="store_true", help="alias flood (N copies in aliases)")
+    gql.add_argument("--alias-count", "-n", type=int, default=50, help="alias count (default: 50)")
+    gql.add_argument("--directive", action="store_true", help="directive injection (@include/@skip)")
+    gql.add_argument("--persisted", action="store_true", help="persisted query hash bypass (APQ)")
+    gql.add_argument("--field-leak", action="store_true", help="field suggestion leak")
+    gql.add_argument("--all", dest="all_techniques", action="store_true", help="run all techniques")
+    gql.set_defaults(func=cmd_graphql)
+
+    wsp = sub.add_parser("ws", help="WebSocket attack techniques: frame injection, binary, fragmentation")
+    _add_target_args(wsp)
+    wsp.add_argument("--payload", default="", help="injection payload")
+    wsp.add_argument("--ws-path", default="/socket.io/?EIO=4&transport=websocket",
+                     help="WebSocket upgrade path (default: socket.io)")
+    wsp.add_argument("--text", action="store_true", help="text frame injection")
+    wsp.add_argument("--binary", action="store_true", help="binary frame injection")
+    wsp.add_argument("--fragment", action="store_true", help="fragmented frame injection")
+    wsp.add_argument("--upgrade", action="store_true", help="upgrade URL injection")
+    wsp.add_argument("--all", dest="all_techniques", action="store_true", help="run all techniques")
+    wsp.set_defaults(func=cmd_ws)
 
     e = sub.add_parser("eval", help="score WAF coverage + false-positive rate over a corpus")
     _add_target_args(e)
@@ -1567,6 +1846,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target_args(disc)
     disc.add_argument("--out", default="", help="write discovery report JSON here")
     disc.set_defaults(func=cmd_discover)
+
+    df = sub.add_parser("defend",
+                        help="generate deployable WAF rules from bypass findings (ModSecurity/NAXSI/Cloudflare/AWS)")
+    df.add_argument("--findings", required=True, help="JSONL from `waffen bypass --out`")
+    df.add_argument("--engine", default="modsecurity",
+                    choices=["modsecurity", "naxsi", "cloudflare", "aws", "all"],
+                    help="WAF engine format (default: modsecurity)")
+    df.add_argument("--out", default="", help="output file (or directory for --engine all)")
+    df.set_defaults(func=cmd_defend)
 
     an = sub.add_parser("analyze", help="analyze a collected dataset/log JSONL offline (no network)")
     an.add_argument("log", help="path to a .jsonl log written by `waffen dataset`")
