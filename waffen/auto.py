@@ -73,6 +73,7 @@ class AutoConfig:
     max_requests: int = 300
     yes: bool = False       # non-interactive — accept all defaults
     reconstruct: bool = True  # build exploit seeds from recon results
+    corpus: bool = False      # use the full 3000+ payload corpus
     transport: str = ""
     out: str = ""
     profile_path: str = ""  # save/load target profile for resume
@@ -309,7 +310,7 @@ def run_auto(cfg: AutoConfig) -> int:
 
     all_runs = []
     for cls in cfg.attack_classes:
-        seeds = [(cls, p) for p in kb_seeds.seeds_for(cls)]
+        seeds = [(cls, p) for p in kb_seeds.seeds_for(cls, include_corpus=cfg.corpus)]
         # merge in reconstructed seeds for this class
         seeds.extend((c, p) for c, p in recon_seeds if c == cls)
         if not seeds:

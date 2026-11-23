@@ -192,7 +192,11 @@ def load_plugin(name: str, plugin_dir: Path | None = None) -> Optional[PluginInf
 
 
 def load_all_plugins(plugin_dir: Path | None = None) -> list[PluginInfo]:
-    """Load all plugins from the plugin directory."""
+    """Load all plugins from the plugin directory.
+
+    Each plugin loads in its own try/except — a broken plugin prints a warning
+    to stderr but does not crash WAFFEN.
+    """
     d = plugin_dir or PLUGIN_DIR
     if not d.is_dir():
         return []
@@ -202,9 +206,12 @@ def load_all_plugins(plugin_dir: Path | None = None) -> list[PluginInfo]:
         if name in _loaded:
             loaded.append(_loaded[name])
             continue
-        info = load_plugin(name, d)
-        if info is not None:
-            loaded.append(info)
+        try:
+            info = load_plugin(name, d)
+            if info is not None:
+                loaded.append(info)
+        except Exception as exc:
+            print(f"  [warn] plugin '{name}' failed to load: {exc}", file=sys.stderr)
     return loaded
 
 

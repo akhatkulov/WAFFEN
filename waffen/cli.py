@@ -402,6 +402,7 @@ def cmd_auto(args) -> int:
         cookie=args.cookie or "",
         headers=tuple(args.header or []),
         reconstruct=args.reconstruct,
+        corpus=getattr(args, "corpus", False),
     )
     if getattr(args, "profile", ""):
         cfg.profile_path = args.profile
@@ -446,6 +447,16 @@ def cmd_bypass(args) -> int:
         f"budget={args.max_requests}/run")
         + (("  " + " ".join(flags)) if flags else ""))
     print(ui.rule())
+
+    n_transforms = len(sorted(transform_names)) if transform_names else len(T.TRANSFORMS)
+    total_max = len(seeds) * n_transforms * args.max_requests
+    est_min = total_max * 1.5 / 60
+    print(ui.gray(f"  estimate: {len(seeds)} seeds × {n_transforms} transforms × "
+                  f"{args.max_requests} budget = {total_max} max requests (~{est_min:.0f} min)"))
+
+    if getattr(args, "dry_run", False):
+        print(ui.info("\n  --dry-run: exiting without sending requests"))
+        return 0
 
     if args.canary:
         print(ui.gray(f"  (canary: re-probing a known-benign value every {args.canary_every} sends; "
@@ -1995,6 +2006,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="file or directory for --defend output (default: stdout)")
     b.add_argument("--html-report", default="", metavar="FILE",
                    help="write a professional HTML pentest report here (open in browser, print to PDF)")
+    b.add_argument("--dry-run", action="store_true",
+                   help="show the search plan and time estimate, then exit without sending any requests")
     b.set_defaults(func=cmd_bypass)
 
     ad = sub.add_parser("adaptive",
@@ -2016,7 +2029,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("auto",
                        help="guided wizard — answers a few questions, runs the full pipeline automatically")
-    a.add_argument("--url", default="", help="target URL (skips the interactive prompt)")
+    a.add_argument("--url", "--target", default="", dest="url",
+                   help="target URL (skips the interactive prompt)")
     a.add_argument("--path", default="", help="request path")
     a.add_argument("--param", default="q", help="parameter name")
     a.add_argument("-y", "--yes", action="store_true",
@@ -2028,6 +2042,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--block-signature", default="Request blocked by RedEye")
     a.add_argument("--header", "-H", action="append", default=None)
     a.add_argument("--cookie", default="")
+    a.add_argument("--corpus", action="store_true",
+                   help="use the full 3000+ payload corpus instead of KB seeds only")
     a.add_argument("--no-reconstruct", dest="reconstruct", action="store_false", default=True,
                    help="skip payload reconstruction from recon results")
     a.add_argument("--profile", default="", metavar="FILE",
@@ -2233,7 +2249,8 @@ def build_parser() -> argparse.ArgumentParser:
     fp.set_defaults(func=cmd_fingerprint)
 
     og = sub.add_parser("origin", help="discover origin server IP behind a WAF (DNS, MX, SPF, headers)")
-    og.add_argument("--domain", required=True, help="target domain (e.g. example.com)")
+    og.add_argument("--domain", "--target", required=True, dest="domain",
+                    help="target domain (e.g. example.com)")
     og.add_argument("--verify", action="store_true",
                     help="verify each candidate by sending a request with Host header")
     og.add_argument("--out", default="", help="write origin report JSON here")
@@ -2320,7 +2337,8 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--count", dest="count_only", action="store_true", help="show count only")
     cp.set_defaults(func=cmd_corpus)
 
-    oob = sub.add_parser("oob", help="out-of-band callback server for blind vulnerability verification")
+    oob = sub.add_parser("oob", help="out-of-band callback server for blind vulnerability verification "
+                         "(runs in FOREGROUND — use a separate terminal for bypass commands)")
     oob.add_argument("--listen", default="127.0.0.1", help="listen address (default: 127.0.0.1)")
     oob.add_argument("--port", type=int, default=8888, help="listen port (default: 8888)")
     oob.add_argument("--external", default="", help="external hostname/IP that the target can reach")

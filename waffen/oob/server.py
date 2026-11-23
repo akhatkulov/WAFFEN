@@ -4,7 +4,15 @@ Generates unique callback URLs, listens for incoming requests, and records
 which payloads triggered a callback — proving blind SSRF, blind XSS, blind
 XXE, and RCE without requiring Burp Collaborator.
 
-Usage::
+CLI usage (two terminals)::
+
+    # Terminal 1 — start the OOB listener (runs in foreground):
+    waffen oob --start --port 8888 --external your-vps-ip
+
+    # Terminal 2 — run bypass search with OOB payloads:
+    waffen bypass --target https://target.com --class ssrf --oob your-vps-ip:8888
+
+Python API::
 
     srv = OOBServer(listen_port=8888, external_host="my-vps.com")
     srv.start()
