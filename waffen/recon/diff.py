@@ -178,3 +178,153 @@ def write_diff_jsonl(report: DiffReport, path: str) -> None:
     with p.open("w") as f:
         for probe in report.probes:
             f.write(json.dumps(probe.as_dict(), ensure_ascii=False) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Multi-WAF differential — compare 2+ WAFs against each other
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MultiDiffProbe:
+    payload: str
+    attack_class: str
+    results: dict  # waf_name → verdict string
+    codes: dict    # waf_name → HTTP status code
+    diagnosis: str  # ALL_BLOCK / ALL_PASS / SPLIT
+    blocked_by: list = field(default_factory=list)
+    missed_by: list = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {
+            "payload": self.payload,
+            "attack_class": self.attack_class,
+            "results": self.results,
+            "codes": self.codes,
+            "diagnosis": self.diagnosis,
+            "blocked_by": self.blocked_by,
+            "missed_by": self.missed_by,
+        }
+
+
+@dataclass
+class MultiDiffReport:
+    waf_names: list = field(default_factory=list)
+    probes: list = field(default_factory=list)
+
+    @property
+    def total_probes(self) -> int:
+        return len(self.probes)
+
+    @property
+    def all_blocked(self) -> int:
+        return sum(1 for p in self.probes if p.diagnosis == "ALL_BLOCK")
+
+    @property
+    def all_passed(self) -> int:
+        return sum(1 for p in self.probes if p.diagnosis == "ALL_PASS")
+
+    @property
+    def split(self) -> int:
+        return sum(1 for p in self.probes if p.diagnosis == "SPLIT")
+
+    @property
+    def split_details(self) -> list:
+        return [p for p in self.probes if p.diagnosis == "SPLIT"]
+
+    def per_waf_misses(self) -> dict:
+        """For each WAF, return payloads it uniquely missed while others blocked."""
+        misses: dict = {n: [] for n in self.waf_names}
+        for p in self.split_details:
+            for name in p.missed_by:
+                misses[name].append(p.payload)
+        return misses
+
+    def as_dict(self) -> dict:
+        return {
+            "waf_names": self.waf_names,
+            "total": self.total_probes,
+            "all_blocked": self.all_blocked,
+            "all_passed": self.all_passed,
+            "split": self.split,
+            "per_waf_misses": {n: len(v) for n, v in self.per_waf_misses().items()},
+            "probes": [p.as_dict() for p in self.probes],
+        }
+
+
+def _multi_diagnose(verdicts: dict) -> tuple:
+    """Classify multi-WAF results. Returns (diagnosis, blocked_by, missed_by)."""
+    blocked = [n for n, v in verdicts.items() if v == BLOCKED]
+    passed = [n for n, v in verdicts.items() if v != BLOCKED]
+
+    if len(blocked) == len(verdicts):
+        return "ALL_BLOCK", blocked, []
+    if len(passed) == len(verdicts):
+        return "ALL_PASS", [], passed
+    return "SPLIT", blocked, passed
+
+
+class MultiWAFDifferential:
+    """Send the same payloads to 2+ WAFs and find where they disagree."""
+
+    def __init__(self, targets: dict, senders: dict | None = None):
+        """targets: {"CRS": Target(...), "RedEye": Target(...), ...}"""
+        senders = senders or {}
+        self.names = list(targets.keys())
+        self.oracles = {
+            name: Oracle(t, sender=senders.get(name))
+            for name, t in targets.items()
+        }
+
+    def probe(self, payload: str, attack_class: str = "") -> MultiDiffProbe:
+        verdicts = {}
+        codes = {}
+        for name, oracle in self.oracles.items():
+            resp = oracle.send(payload)
+            verdicts[name] = resp.verdict
+            codes[name] = resp.code
+        diagnosis, blocked_by, missed_by = _multi_diagnose(verdicts)
+        return MultiDiffProbe(
+            payload=payload,
+            attack_class=attack_class,
+            results=dict(verdicts),
+            codes=dict(codes),
+            diagnosis=diagnosis,
+            blocked_by=list(blocked_by),
+            missed_by=list(missed_by),
+        )
+
+    def run_payloads(self, payloads: Sequence[tuple[str, str]]) -> MultiDiffReport:
+        report = MultiDiffReport(waf_names=list(self.names))
+        for cls, payload in payloads:
+            report.probes.append(self.probe(payload, attack_class=cls))
+        return report
+
+    def run_seeds(self, attack_classes: Sequence[str] | None = None) -> MultiDiffReport:
+        from ..kb.seeds import seeds_for
+        classes = attack_classes or ["SQL Injection"]
+        payloads = []
+        for cls in classes:
+            for p in seeds_for(cls):
+                payloads.append((cls, p))
+        return self.run_payloads(payloads)
+
+    def run_corpus(self, attack_class: str = "sqli") -> MultiDiffReport:
+        from ..kb.seeds import seeds_for
+        payloads = [(attack_class, p) for p in seeds_for(attack_class, include_corpus=True)]
+        return self.run_payloads(payloads)
+
+
+def write_multi_diff_jsonl(report: MultiDiffReport, path: str) -> None:
+    """Write a multi-WAF diff report to JSONL."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w") as f:
+        f.write(json.dumps({
+            "waf_names": report.waf_names,
+            "total": report.total_probes,
+            "all_blocked": report.all_blocked,
+            "all_passed": report.all_passed,
+            "split": report.split,
+        }, ensure_ascii=False) + "\n")
+        for probe in report.split_details:
+            f.write(json.dumps(probe.as_dict(), ensure_ascii=False) + "\n")

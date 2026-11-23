@@ -204,8 +204,13 @@ def cmd_minimize(args) -> int:
 
 
 def cmd_diff(args) -> int:
+    # Multi-WAF mode: --targets "Name1=URL1,Name2=URL2,..."
+    if getattr(args, "targets", ""):
+        return _cmd_diff_multi(args)
+
+    # Legacy two-target mode: --waf + --origin
     if not args.waf:
-        print("[err] --waf is required", file=sys.stderr)
+        print("[err] --waf is required (or use --targets for multi-WAF)", file=sys.stderr)
         return 2
     if not args.origin:
         print("[err] --origin is required", file=sys.stderr)
@@ -275,6 +280,134 @@ def cmd_diff(args) -> int:
     if args.out:
         write_diff_jsonl(report, args.out)
         print(ui.ok(f"diff report written to {args.out}"))
+    return 0
+
+
+def _cmd_diff_multi(args) -> int:
+    """Multi-WAF differential: compare 2+ WAFs against each other."""
+    from .recon.diff import MultiWAFDifferential, write_multi_diff_jsonl
+    from .kb.seeds import resolve_class
+
+    # Parse --targets "Name1=URL1,Name2=URL2"
+    targets_dict = {}
+    for pair in args.targets.split(","):
+        pair = pair.strip()
+        if "=" not in pair:
+            print(f"[err] invalid target format: {pair!r} — expected Name=URL", file=sys.stderr)
+            return 2
+        name, url = pair.split("=", 1)
+        name, url = name.strip(), url.strip()
+        targets_dict[name] = Target(
+            base_url=url, path=args.path, param=args.param,
+            inject=args.inject, method=args.method, timeout=args.timeout,
+            tls_verify=args.tls_verify, block_signature=args.block_signature,
+            **_auth_kwargs(args),
+        )
+
+    if len(targets_dict) < 2:
+        print("[err] --targets requires at least 2 WAFs", file=sys.stderr)
+        return 2
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    names = list(targets_dict.keys())
+    print(ui.info("multi-WAF differential  ") + ui.bold(" vs ".join(names)))
+    print(ui.gray(f"  param={args.param} inject={args.inject} method={args.method}"))
+    print(ui.rule())
+
+    tester = MultiWAFDifferential(targets_dict)
+
+    use_corpus = getattr(args, "corpus", False)
+    classes = [resolve_class(c.strip()) for c in (args.attack_class or "sqli").split(",")]
+
+    if use_corpus:
+        print(ui.info(f"testing corpus for: {', '.join(classes)}"))
+        report = tester.run_corpus(classes[0])
+    else:
+        print(ui.info(f"testing seeds for: {', '.join(classes)}"))
+        report = tester.run_seeds(classes)
+
+    # summary
+    print()
+    for label, count, color in [
+        ("ALL BLOCK", report.all_blocked, ui.gray),
+        ("ALL PASS", report.all_passed, ui.green),
+        ("SPLIT", report.split, ui.red),
+    ]:
+        suffix = ""
+        if label == "SPLIT" and count:
+            suffix = ui.bold("  ← WAFs disagree — gold mine")
+        elif label == "ALL PASS" and count:
+            suffix = ui.gray("  ← none blocked (benign or all vulnerable)")
+        print(f"  {color(f'{label:12s}')} {count:>4}  payloads{suffix}")
+
+    # per-WAF miss breakdown
+    if report.split:
+        print(f"\n  {ui.bold('Split details')} (per-WAF misses):")
+        misses = report.per_waf_misses()
+        for name in names:
+            others = [n for n in names if n != name]
+            cnt = len(misses[name])
+            if cnt:
+                print(f"    {ui.red(name)} misses ({'+'.join(others)} block): "
+                      f"{ui.bold(str(cnt))} payloads")
+            else:
+                print(f"    {ui.green(name)}: no unique misses")
+
+        # show first few split payloads
+        splits = report.split_details[:20]
+        if splits:
+            print(f"\n  {ui.bold('Sample split payloads')}:")
+            for p in splits:
+                blocked = ",".join(p.blocked_by)
+                missed = ",".join(p.missed_by)
+                cls_tag = ui.gray(f"[{p.attack_class}]") if p.attack_class else ""
+                print(f"    {p.payload[:40]:40s}  "
+                      f"blocked={blocked}  missed={ui.bold(missed)}  {cls_tag}")
+
+    print(ui.rule())
+    print(ui.gray(f"  {report.total_probes} probes × {len(names)} WAFs = "
+                  f"{report.total_probes * len(names)} requests"))
+
+    if args.out:
+        write_multi_diff_jsonl(report, args.out)
+        print(ui.ok(f"multi-WAF diff report written to {args.out}"))
+    return 0
+
+
+def cmd_daemon(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+
+    from .daemon import WAFFENDaemon, DaemonConfig
+
+    cfg = DaemonConfig(
+        target_url=args.target,
+        path=args.path,
+        param=args.param,
+        inject=args.inject,
+        method=args.method,
+        interval_hours=args.interval,
+        attack_classes=[c.strip() for c in args.attack_class.split(",")
+                        ] if args.attack_class else ["sqli"],
+        max_requests_per_cycle=args.max_requests,
+        profile_path=args.profile or "",
+        webhook_url=args.webhook or "",
+        block_signature=args.block_signature,
+        timeout=args.timeout,
+        tls_verify=args.tls_verify,
+        transport=args.transport,
+        extra_headers=tuple(args.header or []),
+        cookie=args.cookie or "",
+    )
+
+    daemon = WAFFENDaemon(cfg)
+    try:
+        daemon.run(max_cycles=args.cycles)
+    except KeyboardInterrupt:
+        print("\n  [!] Daemon stopped by user")
     return 0
 
 
@@ -1222,6 +1355,61 @@ def cmd_ws(args) -> int:
     return 0
 
 
+def cmd_sidechannel(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .recon.sidechannel import SideChannelOracle
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method, timeout=args.timeout,
+                    tls_verify=args.tls_verify, block_signature=args.block_signature,
+                    **_auth_kwargs(args))
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("side-channel analysis for ") + ui.bold(args.target))
+    print(ui.gray("  timing-based WAF internal scoring extraction"))
+    print(ui.rule())
+
+    payloads = None
+    if getattr(args, "payloads", ""):
+        with open(args.payloads) as f:
+            payloads = [line.strip() for line in f if line.strip()]
+
+    oracle = SideChannelOracle(target, samples_per_probe=args.samples,
+                               transport=args.transport)
+    report = oracle.run(payloads=payloads)
+
+    print(f"  {ui.info('Baseline (benign):  ')} {report.baseline_ms:.1f}ms")
+    print(f"  {ui.info('Ceiling (blocked):  ')} {report.blocked_ms:.1f}ms")
+    print(f"  {ui.info('Processing window:  ')} {report.timing_range_ms:.1f}ms")
+
+    if report.rule_clusters:
+        print(f"\n  {ui.info('Rule clusters')} ({len(report.rule_clusters)} detected):")
+        for c in report.rule_clusters:
+            label_color = ui.green if c.label == "no_processing" else ui.gray
+            print(f"    {label_color(f'{c.label:20s}')} {c.median_ms:7.1f}ms  "
+                  f"{c.count:3d} payloads")
+
+    if report.gap_payloads:
+        print(f"\n  {ui.green(f'Gap payloads ({len(report.gap_payloads)})')} "
+              + ui.gray("— WAF barely processed these:"))
+        for p in report.gap_payloads[:10]:
+            print(f"    {ui.bold(p[:60])}")
+
+    print(ui.rule())
+    print(ui.gray(f"  {report.estimated_rule_groups} estimated rule groups, "
+                  f"{report.total_requests} requests used"))
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        _P(args.out).write_text(
+            _json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+        print(ui.ok(f"side-channel report written to {args.out}"))
+    return 0
+
+
 def cmd_origin(args) -> int:
     if not args.domain:
         print("[err] --domain is required", file=sys.stderr)
@@ -2153,6 +2341,27 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--out", default="", help="write watch report JSONL here")
     w.set_defaults(func=cmd_watch)
 
+    dm = sub.add_parser("daemon",
+                        help="continuous autonomous assessment — monitor a WAF 24/7, detect changes, alert on new bypasses")
+    _add_target_args(dm)
+    dm.add_argument("--param", default="q", help="parameter name (default: q)")
+    dm.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                    help="where to inject (default: query)")
+    dm.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    dm.add_argument("--class", dest="attack_class", default="sqli",
+                    help="attack classes, comma-separated (default: sqli)")
+    dm.add_argument("--interval", type=float, default=6.0,
+                    help="hours between cycles (default: 6)")
+    dm.add_argument("--max-requests", type=int, default=500,
+                    help="request budget per cycle (default: 500)")
+    dm.add_argument("--profile", default="",
+                    help="JSON profile path for save/resume across restarts")
+    dm.add_argument("--webhook", default="",
+                    help="Slack/Discord/generic webhook URL for alerts")
+    dm.add_argument("--cycles", type=int, default=0,
+                    help="max cycles (0 = infinite, default: 0)")
+    dm.set_defaults(func=cmd_daemon)
+
     mn = sub.add_parser("minimize",
                         help="shrink bypass findings to their minimal form (chain reduction + text trimming)")
     _add_target_args(mn)
@@ -2167,9 +2376,13 @@ def build_parser() -> argparse.ArgumentParser:
     mn.set_defaults(func=cmd_minimize)
 
     df = sub.add_parser("diff",
-                        help="differential testing: compare WAF vs bare origin to disambiguate blocks")
-    df.add_argument("--waf", required=True, help="WAF-fronted target URL")
-    df.add_argument("--origin", required=True, help="bare origin target URL (no WAF)")
+                        help="differential testing: compare WAF vs origin, or WAF vs WAF (multi-target)")
+    df.add_argument("--waf", default="", help="WAF-fronted target URL (two-target mode)")
+    df.add_argument("--origin", default="", help="bare origin target URL (two-target mode)")
+    df.add_argument("--targets", default="",
+                    help="multi-WAF mode: 'Name1=URL1,Name2=URL2,...' — compare 2+ WAFs")
+    df.add_argument("--corpus", action="store_true",
+                    help="use full payload corpus instead of KB seeds")
     df.add_argument("--path", default="/", help="shared request path (default: /)")
     df.add_argument("--waf-path", default="", help="override path for WAF target only")
     df.add_argument("--origin-path", default="", help="override path for origin target only")
@@ -2213,6 +2426,18 @@ def build_parser() -> argparse.ArgumentParser:
     wsp.add_argument("--upgrade", action="store_true", help="upgrade URL injection")
     wsp.add_argument("--all", dest="all_techniques", action="store_true", help="run all techniques")
     wsp.set_defaults(func=cmd_ws)
+
+    sc = sub.add_parser("sidechannel",
+                        help="timing-based side-channel analysis — extract WAF internal scoring and rule structure")
+    _add_target_args(sc)
+    sc.add_argument("--param", default="q", help="parameter to inject (default: q)")
+    sc.add_argument("--inject", default="query", choices=["query", "body", "json"])
+    sc.add_argument("--method", default="GET")
+    sc.add_argument("--samples", type=int, default=5,
+                    help="timing samples per payload (default: 5, more = more accurate)")
+    sc.add_argument("--payloads", default="", help="file with custom payloads (one per line)")
+    sc.add_argument("--out", default="", help="write side-channel report JSON here")
+    sc.set_defaults(func=cmd_sidechannel)
 
     e = sub.add_parser("eval", help="score WAF coverage + false-positive rate over a corpus")
     _add_target_args(e)
