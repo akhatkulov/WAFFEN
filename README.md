@@ -62,8 +62,10 @@ waffen auto --target https://your-waf.example -y      # non-interactive
 | `cve-probe` | Behavioural triage for 2026 WAF engine CVE primitives |
 | `discover` | Auto-discover WAF-inspected injection points (params, JSON keys, headers, cookies) |
 | `origin` | Find the origin server IP behind a WAF (DNS, MX, SPF, header leaks) |
-| `diff` | Differential testing: compare WAF vs origin to diagnose WAF_ONLY / APP_ONLY blocks |
+| `diff` | Differential testing: WAF vs origin or multi-WAF comparison (WAF_ONLY / SPLIT) |
 | `calibrate` | Learn WAF block/pass signature; `--cluster` discovers full response taxonomy via k-means |
+| `sidechannel` | Side-channel timing oracle — extract WAF internal scoring from response timing |
+| `rulemap` | Reverse-engineer the WAF's rule set (86 CRS rule signatures, PL1-PL4) |
 
 ### Attack Modules
 
@@ -73,6 +75,8 @@ waffen auto --target https://your-waf.example -y      # non-interactive
 | `ws` | WebSocket attacks: text/binary/fragmented frame injection |
 | `sequence` | Multi-request attack sequences (auth→inject, store→trigger, fragment) |
 | `oob` | Built-in OOB callback server for blind SSRF/XSS/XXE/RCE verification |
+| `exploit` | SQLi exploitation engine — UNION/blind/time/error extraction through WAF bypass path |
+| `plan` | Multi-step attack graph planner — Dijkstra shortest path to goals (dump_db, admin, rce) |
 
 ### Workflow
 
@@ -82,6 +86,7 @@ waffen auto --target https://your-waf.example -y      # non-interactive
 | `watch` | Re-test saved bypass findings over time, track what still works vs patched |
 | `minimize` | Reduce a 4-step mutation chain to its minimal bypass form |
 | `profile` | Show or manage a saved target profile (save/resume across sessions) |
+| `daemon` | Continuous autonomous monitoring — periodic scans with Slack/webhook alerts |
 
 ### Defense & Reporting
 
@@ -89,6 +94,9 @@ waffen auto --target https://your-waf.example -y      # non-interactive
 |---------|-------------|
 | `defend` | Generate deployable WAF rules from bypasses (ModSecurity, NAXSI, Cloudflare, AWS WAF) |
 | `report` | Professional HTML report with executive summary, findings, remediation |
+| `grammar` | Generate payloads from SQL/XSS/SSTI context-free grammars (100% syntactically valid) |
+| `semantic` | Semantic equivalence — 50+ provably-equivalent SQL forms for any payload |
+| `synthesize` | LLM-guided payload synthesis — Claude/GPT generates context-aware bypass payloads |
 | `eval` | Score WAF coverage + false-positive rate over a corpus (GoTestWAF-style) |
 
 ### Analysis & Data
