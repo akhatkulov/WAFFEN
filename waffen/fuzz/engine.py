@@ -157,9 +157,11 @@ class AsyncFuzzer:
 
         while done < total:
             try:
-                res = result_q.get(timeout=self.timeout + 5)
+                res = result_q.get(timeout=2.0)
             except queue.Empty:
-                break
+                if not any(t.is_alive() for t in workers):
+                    break
+                continue
             if self._stop.is_set():
                 break
             done += 1

@@ -102,11 +102,6 @@ class AttackGraph:
                     caps[vkey] = new_caps
                     heapq.heappush(pq, (nd, seq, vkey))
                     seq += 1
-                    if goal in new_caps:
-                        goal_key = vkey
-                        break
-            if goal_key:
-                break
 
         if goal_key is None:
             return []

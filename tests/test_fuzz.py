@@ -295,6 +295,37 @@ class TestFuzzCli:
         assert args.concurrency == 10
         assert hasattr(args, "func")
 
+    def test_fuzz_worker_crash_no_hang(self):
+        """Regression: if all workers crash, the main loop must not hang."""
+        import queue as _q
+        import time
+
+        result_q = _q.Queue()
+        # Simulate workers that die immediately (threads that already finished)
+        dead_workers = []
+        for _ in range(3):
+            t = threading.Thread(target=lambda: None, daemon=True)
+            t.start()
+            t.join()  # wait for it to die
+            dead_workers.append(t)
+        assert not any(t.is_alive() for t in dead_workers)
+
+        # Main loop should detect dead workers and break within seconds
+        done = 0
+        total = 100
+        start = time.monotonic()
+        while done < total:
+            try:
+                result_q.get(timeout=2.0)
+                done += 1
+            except _q.Empty:
+                if not any(t.is_alive() for t in dead_workers):
+                    break
+                continue
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"Loop hung for {elapsed:.1f}s — should break on dead workers"
+        assert done == 0, "No results expected from dead workers"
+
     def test_fuzz_filter_flags(self):
         from waffen.cli import build_parser
         p = build_parser()

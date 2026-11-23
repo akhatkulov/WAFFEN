@@ -107,18 +107,6 @@ def hpack_encode(headers: list[tuple[str, str]],
     """
     out = bytearray()
     for name, value in headers:
-        # Check if the name is in the static table
-        pair_idx = _STATIC_BY_PAIR.get((name, value))
-        if pair_idx is not None:
-            # Indexed header field (top bit set)
-            out.extend(bytes([0x80]) + _encode_int(pair_idx, 7)[0:1])
-            # Actually: fully indexed = single byte 0x80|idx
-            out.clear()  # redo properly
-            break
-
-    # Simpler: always literal-never-indexed for reliability
-    out = bytearray()
-    for name, value in headers:
         name_idx = _STATIC_BY_NAME.get(name)
         if name_idx is not None and never_index:
             # Literal never indexed with name index (0001xxxx)

@@ -111,6 +111,27 @@ class TestAttackGraph:
         assert "edges" in d
         assert len(d["edges"]) == 3
 
+    def test_shortest_path_no_early_break(self):
+        """Regression: Dijkstra must not short-circuit when the goal capability
+        is first DISCOVERED via a neighbor — only when it's POPPED from the
+        heap.  The old code had an inner break that returned a suboptimal path
+        when a cheaper route existed through a later-explored node."""
+        g = AttackGraph()
+        s = AttackNode("", "start")
+        a = AttackNode("/a", "mid_expensive")
+        b = AttackNode("/b", "mid_cheap")
+        end = AttackNode("/end", "goal")
+        # Expensive path found first: s → a (cost 1) → end (cost 10) = 11
+        g.add_edge(AttackEdge(s, a, cost=1.0, provides=[]))
+        g.add_edge(AttackEdge(a, end, cost=10.0, provides=["win"]))
+        # Cheap path found later: s → b (cost 2) → end (cost 1) = 3
+        g.add_edge(AttackEdge(s, b, cost=2.0, provides=[]))
+        g.add_edge(AttackEdge(b, end, cost=1.0, provides=["win"]))
+        path = g.shortest_path(s, "win")
+        total = sum(e.cost for e in path)
+        assert total == 3.0, f"Expected cheapest path cost 3.0, got {total}"
+        assert path[0].target == b, "Should go through /b, not /a"
+
     def test_shortest_path_prefers_cheap(self):
         g = AttackGraph()
         a = AttackNode("", "anonymous")

@@ -91,11 +91,26 @@ class TestBudgetAllocation:
     def test_allocate_sequence(self):
         cfg = RedTeamConfig(target_url="https://x.com", max_budget=1000)
         agent = AutonomousRedTeam(cfg)
-        b1 = agent._allocate(0.10)  # 100
-        b2 = agent._allocate(0.50)  # 450
+        b1 = agent._allocate(0.10)  # 10% of 1000 = 100
+        b2 = agent._allocate(0.50)  # 50% of 1000 = 500
         assert b1 == 100
-        assert b2 == 450
-        assert agent._budget_remaining == 450
+        assert b2 == 500
+        assert agent._budget_remaining == 400
+
+    def test_allocate_uses_total_not_remaining(self):
+        """Regression: _allocate must use max_budget, not _budget_remaining."""
+        cfg = RedTeamConfig(target_url="https://x.com", max_budget=5000)
+        agent = AutonomousRedTeam(cfg)
+        b1 = agent._allocate(0.10)  # 500
+        b2 = agent._allocate(0.15)  # 750 (of total, not of remaining)
+        b3 = agent._allocate(0.50)  # 2500
+        b4 = agent._allocate(0.20)  # 1000
+        assert b1 == 500
+        assert b2 == 750
+        assert b3 == 2500
+        assert b4 == 1000
+        total_allocated = b1 + b2 + b3 + b4
+        assert total_allocated == 4750, f"Should allocate ~95%, got {total_allocated}"
 
 
 # ---- target construction ---------------------------------------------------

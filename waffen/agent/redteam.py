@@ -106,7 +106,7 @@ class AutonomousRedTeam:
                       calibration=calibration, transport=self.cfg.transport)
 
     def _allocate(self, fraction: float) -> int:
-        budget = max(10, int(self._budget_remaining * fraction))
+        budget = max(10, int(self.cfg.max_budget * fraction))
         self._budget_remaining -= budget
         return budget
 
