@@ -70,19 +70,23 @@ def _expand_frontier(frontier, mutators, visited: set[str]):
     depth, applying mutators and skipping no-ops / already-visited / in-batch dups.
     Does NOT send anything and does NOT mutate `visited` — the caller decides which
     of the returned candidates are actually kept (budget truncation) before
-    recording them as visited."""
+    recording them as visited.
+
+    Multi-variant mutators (m.multi=True) fan out all their variants as separate
+    candidates, capped at 5 per mutator per state."""
     seen_batch: set[str] = set()
     pending: list[tuple[State, object, str]] = []
     for st in frontier:
         for m in mutators:
             try:
-                mp = m.apply(st.payload)
+                variants = m.apply_multi(st.payload) if getattr(m, 'multi', False) else [m.apply(st.payload)]
             except Exception:
                 continue  # mutator crash — skip, don't break the search
-            if not mp or mp == st.payload or mp in visited or mp in seen_batch:
-                continue
-            seen_batch.add(mp)
-            pending.append((st, m, mp))
+            for mp in variants:
+                if not mp or mp == st.payload or mp in visited or mp in seen_batch:
+                    continue
+                seen_batch.add(mp)
+                pending.append((st, m, mp))
     return pending
 
 
@@ -90,7 +94,8 @@ def beam_search(oracle: Oracle, seed: str, mutators, *,
                 width: int = 6, depth: int = 4, max_requests: int = 400,
                 attack_class: str = "", stop_on_first: bool = False,
                 verify_fn=None, on_event=None, on_progress=None,
-                concurrency: int = 1) -> SearchResult:
+                concurrency: int = 1,
+                exploit_guided: bool = False) -> SearchResult:
     """Search for evasion chains. `mutators` is a list of Mutator objects.
 
     `verify_fn(payload)->Verification`, when given, inline-verifies each THROUGH;
@@ -107,6 +112,16 @@ def beam_search(oracle: Oracle, seed: str, mutators, *,
     def emit(kind: str, **kw):
         if on_event:
             on_event(kind, **kw)
+
+    _signal_detect = None
+    _baseline_pass = None
+    if exploit_guided:
+        from .exploit_signal import detect_exploit_signal
+        _signal_detect = detect_exploit_signal
+        try:
+            _baseline_pass = oracle.send("waffen_benign_baseline_probe")
+        except Exception:
+            _baseline_pass = None
 
     result = SearchResult(seed=seed, attack_class=attack_class)
     baseline = oracle.send(seed)
@@ -134,25 +149,35 @@ def beam_search(oracle: Oracle, seed: str, mutators, *,
                         emit("budget_exhausted", requests=oracle.requests)
                         break
                     try:
-                        mp = m.apply(st.payload)
+                        variants = m.apply_multi(st.payload) if getattr(m, 'multi', False) else [m.apply(st.payload)]
                     except Exception:
                         continue  # mutator crash — skip, don't break the search
-                    if not mp or mp == st.payload or not mp.strip() or mp in visited:
-                        continue
-                    visited.add(mp)
-                    resp = oracle.send(mp)
-                    sc = oracle.score(resp, baseline)
-                    ns = State(mp, st.chain + [m.name], resp, sc)
-                    if resp.through:
-                        f = Finding(mp, ns.chain, resp.code, attack_class)
-                        real = finalize_finding(f, verify_fn)
-                        result.findings.append(f)
-                        emit("found", chain=ns.chain, code=resp.code, payload=mp, depth=d, verified=f.verified)
-                        if stop_on_first and real:
-                            result.requests = oracle.requests
-                            return result
-                    else:
-                        candidates.append(ns)
+                    for mp in variants:
+                        if oracle.requests >= max_requests:
+                            break
+                        if not mp or mp == st.payload or not mp.strip() or mp in visited:
+                            continue
+                        visited.add(mp)
+                        resp = oracle.send(mp)
+                        sc = oracle.score(resp, baseline)
+                        if resp.through and _signal_detect is not None:
+                            sig = _signal_detect(resp, mp, _baseline_pass)
+                            sc += sig.bonus
+                        ns = State(mp, st.chain + [m.name], resp, sc)
+                        if resp.through:
+                            f = Finding(mp, ns.chain, resp.code, attack_class)
+                            real = finalize_finding(f, verify_fn)
+                            result.findings.append(f)
+                            sig_info = None
+                            if _signal_detect is not None:
+                                sig_info = _signal_detect(resp, mp, _baseline_pass).summary()
+                            emit("found", chain=ns.chain, code=resp.code, payload=mp,
+                                 depth=d, verified=f.verified, exploit_signal=sig_info)
+                            if stop_on_first and real:
+                                result.requests = oracle.requests
+                                return result
+                        else:
+                            candidates.append(ns)
                 if oracle.requests >= max_requests:
                     break
             if not candidates:
@@ -198,12 +223,19 @@ def beam_search(oracle: Oracle, seed: str, mutators, *,
         stop = False
         for (st, m, mp), resp in zip(pending, responses):
             sc = oracle.score(resp, baseline)
+            if resp.through and _signal_detect is not None:
+                sig = _signal_detect(resp, mp, _baseline_pass)
+                sc += sig.bonus
             ns = State(mp, st.chain + [m.name], resp, sc)
             if resp.through:
                 f = Finding(mp, ns.chain, resp.code, attack_class)
                 real = finalize_finding(f, verify_fn)
                 result.findings.append(f)
-                emit("found", chain=ns.chain, code=resp.code, payload=mp, depth=d, verified=f.verified)
+                sig_info = None
+                if _signal_detect is not None:
+                    sig_info = _signal_detect(resp, mp, _baseline_pass).summary()
+                emit("found", chain=ns.chain, code=resp.code, payload=mp,
+                     depth=d, verified=f.verified, exploit_signal=sig_info)
                 if stop_on_first and real:
                     stop = True
                     break

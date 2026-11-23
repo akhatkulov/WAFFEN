@@ -83,37 +83,36 @@ def best_first_search(oracle: Oracle, seed: str, mutators, *,
                 if m is None:
                     continue
                 try:
-                    mp = m.apply(st.payload)
+                    variants = m.apply_multi(st.payload) if m.multi else [m.apply(st.payload)]
                 except Exception:
                     continue  # mutator crash — skip, don't break the search
-                if not mp or mp == st.payload or mem.is_dup(mp) or mem.looks_dead(mp):
-                    continue
-                mem.add_seen(mp)
-                resp = cache.get(mp)
-                if resp is None:
-                    resp = oracle.send(mp)
-                    cache[mp] = resp
-                chain = st.chain + [name]
-                sc = gradient_score(resp, baseline, seed_payload=seed,
-                                    chain_len=len(chain), timing_threshold=timing_threshold)
-                bandit.update(name, reward_from_score(sc, parent_score))
-                if resp.through:
-                    f = Finding(mp, chain, resp.code, attack_class)
-                    real = finalize_finding(f, verify_fn)
-                    result.findings.append(f)
-                    emit("found", chain=chain, code=resp.code, payload=mp, depth=len(chain), verified=f.verified)
-                    if stop_on_first and real:
-                        result.requests = oracle.requests
-                        return result
-                    # A passed-but-unconfirmed bypass is still a live frontier: mutating it
-                    # further may reach an exploitable variant that stays past the WAF. Keep
-                    # it in the search instead of dropping it (otherwise the frontier can
-                    # empty out and the search halts on a dead bypass).
+                for mp in variants:
+                    if oracle.requests >= max_requests:
+                        break
+                    if not mp or mp == st.payload or mem.is_dup(mp) or mem.looks_dead(mp):
+                        continue
+                    mem.add_seen(mp)
+                    resp = cache.get(mp)
+                    if resp is None:
+                        resp = oracle.send(mp)
+                        cache[mp] = resp
+                    chain = st.chain + [name]
+                    sc = gradient_score(resp, baseline, seed_payload=seed,
+                                        chain_len=len(chain), timing_threshold=timing_threshold)
+                    bandit.update(name, reward_from_score(sc, parent_score))
+                    if resp.through:
+                        f = Finding(mp, chain, resp.code, attack_class)
+                        real = finalize_finding(f, verify_fn)
+                        result.findings.append(f)
+                        emit("found", chain=chain, code=resp.code, payload=mp, depth=len(chain), verified=f.verified)
+                        if stop_on_first and real:
+                            result.requests = oracle.requests
+                            return result
+                        heapq.heappush(heap, (-sc, next(counter), State(mp, chain, resp, sc)))
+                        continue
+                    if resp.verdict == "BLOCKED":
+                        mem.mark_blocked(mp)
                     heapq.heappush(heap, (-sc, next(counter), State(mp, chain, resp, sc)))
-                    continue
-                if resp.verdict == "BLOCKED":
-                    mem.mark_blocked(mp)
-                heapq.heappush(heap, (-sc, next(counter), State(mp, chain, resp, sc)))
         else:
             # -- batched: this node's `branch` candidates sent in ONE round trip --
             # Phase 1: build+filter candidates locally (no network calls), same
@@ -124,13 +123,14 @@ def best_first_search(oracle: Oracle, seed: str, mutators, *,
                 if m is None:
                     continue
                 try:
-                    mp = m.apply(st.payload)
+                    variants = m.apply_multi(st.payload) if m.multi else [m.apply(st.payload)]
                 except Exception:
                     continue  # mutator crash — skip, don't break the search
-                if not mp or mp == st.payload or mem.is_dup(mp) or mem.looks_dead(mp):
-                    continue
-                mem.add_seen(mp)  # marks it seen now, same as the sequential loop would
-                candidates.append((name, mp))
+                for mp in variants:
+                    if not mp or mp == st.payload or mem.is_dup(mp) or mem.looks_dead(mp):
+                        continue
+                    mem.add_seen(mp)
+                    candidates.append((name, mp))
 
             if candidates:
                 # Phase 2: batch-send only the not-yet-memoized payloads, capped

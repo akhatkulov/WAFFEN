@@ -36,9 +36,13 @@ class _FakeMutator:
         self.name = name
         self._suffix = suffix
         self.classes = set()
+        self.multi = False
 
     def apply(self, payload):
         return payload + self._suffix
+
+    def apply_multi(self, payload, max_variants=5):
+        return [self.apply(payload)]
 
 
 def test_beam_progress_called():

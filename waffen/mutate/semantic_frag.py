@@ -307,27 +307,74 @@ def xss_tag_self_close_confusion(s: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Multi-variant functions
+# ---------------------------------------------------------------------------
+
+def keyword_concat_split_all(s: str) -> list[str]:
+    """Return all 3 dialect variants of keyword concat split."""
+    variants = [keyword_concat_split(s), keyword_concat_split_mysql(s),
+                keyword_concat_split_mssql(s)]
+    return [v for v in variants if v != s]
+
+
+def whitespace_vary_all(s: str) -> list[str]:
+    """Return one variant per whitespace character."""
+    results = []
+    for ws in _WS_CHARS:
+        v = s.replace(" ", ws)
+        if v != s:
+            results.append(v)
+    if whitespace_multispace(s) != s:
+        results.append(whitespace_multispace(s))
+    return results
+
+
+def numeric_obfuscate_all(s: str) -> list[str]:
+    """Return all numeric tautology variants."""
+    fns = [numeric_obfuscate_gt, numeric_obfuscate_between, numeric_obfuscate_in,
+           numeric_obfuscate_string, numeric_obfuscate_scientific]
+    return [fn(s) for fn in fns if fn(s) != s]
+
+
+def sqlite_tautology_all(s: str) -> list[str]:
+    """Return all SQLite-specific tautology variants."""
+    fns = [sqlite_iif_wrap, sqlite_typeof_check, sqlite_quote_tautology]
+    return [fn(s) for fn in fns if fn(s) != s]
+
+
+def xss_event_all(s: str) -> list[str]:
+    """Return one variant per rare event handler."""
+    results = []
+    for evt in _RARE_EVENTS[:5]:
+        v = _COMMON_EVENTS_RE.sub(evt, s)
+        if v != s:
+            results.append(v)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
 def _register() -> None:
     R = REGISTRY
 
-    # SQLi: string concat split (keyword fragmentation)
+    # SQLi: string concat split (keyword fragmentation) — multi-variant
     R.add("sql_keyword_concat_split", keyword_concat_split, "obfuscator",
           "split SQL keywords into ||-concatenated halves (SQLite/PG/Oracle)",
-          classes=_SQL)
+          classes=_SQL, multi=True, multi_fn=keyword_concat_split_all)
     R.add("sql_keyword_concat_split_mysql", keyword_concat_split_mysql, "obfuscator",
           "split SQL keywords via CONCAT() (MySQL)", classes=_SQL)
     R.add("sql_keyword_concat_split_mssql", keyword_concat_split_mssql, "obfuscator",
           "split SQL keywords via + concatenation (MSSQL)", classes=_SQL)
 
-    # SQLi: SQLite-specific operator substitution
+    # SQLi: SQLite-specific operator substitution — multi-variant for tautologies
     R.add("sql_sqlite_operator_swap", sqlite_operator_swap, "obfuscator",
           "LIKE->GLOB, IS NULL->ISNULL, IS NOT NULL->NOTNULL (SQLite)",
           classes=_SQL)
     R.add("sql_sqlite_iif_wrap", sqlite_iif_wrap, "obfuscator",
-          "wrap numeric tautology in SQLite iif() function", classes=_SQL)
+          "wrap numeric tautology in SQLite iif() function", classes=_SQL,
+          multi=True, multi_fn=sqlite_tautology_all)
     R.add("sql_sqlite_typeof_check", sqlite_typeof_check, "obfuscator",
           "1=1 -> typeof(1)='integer' (SQLite function tautology)", classes=_SQL)
     R.add("sql_sqlite_quote_tautology", sqlite_quote_tautology, "obfuscator",
@@ -347,15 +394,17 @@ def _register() -> None:
     R.add("sql_iif_wrap", iif_wrap, "obfuscator",
           "OR 1=1 -> OR iif(1,1,0)=1 (SQLite)", classes=_SQL)
 
-    # SQLi: whitespace variation
+    # SQLi: whitespace variation — multi-variant
     R.add("sql_whitespace_vary", whitespace_vary, "encoder",
-          "cycle spaces through tab/LF/CR/VT/FF", classes=_SQL)
+          "cycle spaces through tab/LF/CR/VT/FF", classes=_SQL,
+          multi=True, multi_fn=whitespace_vary_all)
     R.add("sql_whitespace_multispace", whitespace_multispace, "encoder",
           "single space -> triple space", classes=_SQL)
 
-    # SQLi: numeric tautology obfuscation
+    # SQLi: numeric tautology obfuscation — multi-variant
     R.add("sql_numeric_obfuscate_gt", numeric_obfuscate_gt, "obfuscator",
-          "1=1 -> 2>1 (greater-than tautology)", classes=_SQL)
+          "1=1 -> 2>1 (greater-than tautology)", classes=_SQL,
+          multi=True, multi_fn=numeric_obfuscate_all)
     R.add("sql_numeric_obfuscate_between", numeric_obfuscate_between, "obfuscator",
           "1=1 -> 1 BETWEEN 0 AND 2", classes=_SQL)
     R.add("sql_numeric_obfuscate_in", numeric_obfuscate_in, "obfuscator",
@@ -372,7 +421,7 @@ def _register() -> None:
           "zero-width joiner inside event handler names", classes=_XSS)
     R.add("xss_rare_event_rotate", xss_rare_event_rotate, "obfuscator",
           "rotate common handlers to onpointerover/onanimationend/etc",
-          classes=_XSS)
+          classes=_XSS, multi=True, multi_fn=xss_event_all)
     R.add("xss_tag_self_close_confusion", xss_tag_self_close_confusion, "obfuscator",
           "<tag -> <tag/ self-close confusion", classes=_XSS)
 

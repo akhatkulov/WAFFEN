@@ -12,7 +12,7 @@ separate verification step (see report/ and the --verify roadmap item).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -23,9 +23,22 @@ class Mutator:
     desc: str = ""
     # attack classes this mutator usually keeps semantically valid for ("*" = any)
     classes: frozenset[str] = field(default_factory=lambda: frozenset({"*"}))
+    # when True, apply_multi() returns >1 variant and the search should fan out
+    multi: bool = False
+    # optional function returning multiple variants; used when multi=True
+    _multi_fn: Callable[[str], list[str]] | None = field(default=None, repr=False)
 
     def apply(self, payload: str) -> str:
         return self.fn(payload)
+
+    def apply_multi(self, payload: str, max_variants: int = 5) -> list[str]:
+        """Return multiple mutation variants. Falls back to [apply()] for
+        single-variant mutators. The search fans out each variant as a
+        separate candidate."""
+        if self._multi_fn is not None:
+            variants = self._multi_fn(payload)
+            return variants[:max_variants] if len(variants) > max_variants else variants
+        return [self.apply(payload)]
 
     def valid_for(self, attack_class: str) -> bool:
         return "*" in self.classes or attack_class in self.classes
@@ -44,10 +57,12 @@ class Registry:
         return m
 
     def add(self, name: str, fn: Callable[[str], str], category: str,
-            desc: str = "", classes: set[str] | None = None) -> Mutator:
+            desc: str = "", classes: set[str] | None = None,
+            multi: bool = False, multi_fn: Callable[[str], list[str]] | None = None) -> Mutator:
         return self.register(Mutator(
             name=name, fn=fn, category=category, desc=desc,
             classes=frozenset(classes) if classes else frozenset({"*"}),
+            multi=multi, _multi_fn=multi_fn,
         ))
 
     def all(self) -> list[Mutator]:

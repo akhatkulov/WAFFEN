@@ -364,6 +364,29 @@ def cmd_watch(args) -> int:
     return 0
 
 
+def cmd_profile(args) -> int:
+    from .core.profile import TargetProfile
+    try:
+        p = TargetProfile.load(args.file)
+    except FileNotFoundError:
+        print(f"[err] profile not found: {args.file}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"[err] failed to load profile: {exc}", file=sys.stderr)
+        return 1
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    if args.json:
+        import json
+        print(json.dumps(p._to_dict(), indent=2, ensure_ascii=False, default=str))
+    else:
+        print(ui.info("Target profile: ") + ui.bold(args.file))
+        print(ui.rule())
+        print(p.summary())
+    return 0
+
+
 def cmd_auto(args) -> int:
     from .auto import run_auto, AutoConfig
     cfg = AutoConfig(
@@ -379,6 +402,8 @@ def cmd_auto(args) -> int:
         headers=tuple(args.header or []),
         reconstruct=args.reconstruct,
     )
+    if getattr(args, "profile", ""):
+        cfg.profile_path = args.profile
     return run_auto(cfg)
 
 
@@ -444,6 +469,7 @@ def cmd_bypass(args) -> int:
         transport=args.transport, on_event=ev, scorer=_scorer,
         cross_axis=getattr(args, "cross_axis", False),
         cross_axis_budget=getattr(args, "cross_axis_budget", 200),
+        exploit_guided=getattr(args, "exploit_guided", False),
     )
     report.print_engine_summary(runs)
     if args.out:
@@ -800,6 +826,50 @@ def cmd_fingerprint(args) -> int:
         print(ui.gray("  " + plan["note"]))
     except Exception as exc:
         print(f"  [warn] test plan generation failed: {exc}", file=sys.stderr)
+    return 0
+
+
+def cmd_discover(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .recon.discover import InjectionDiscovery
+    target = Target(base_url=args.target, path=args.path, timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("injection-point discovery for ") + ui.bold(target.url()))
+    print(ui.gray("  probes query params, JSON keys, headers, cookies, path segments"))
+    print(ui.rule())
+
+    disc = InjectionDiscovery(target)
+    report = disc.discover()
+
+    for p in report.points:
+        if p.waf_active:
+            icon = ui.green("✓")
+            detail = ui.bold(f"WAF active ({p.baseline_code}→{p.blocked_code})")
+        else:
+            icon = ui.gray("-")
+            detail = ui.gray(f"no WAF ({p.baseline_code}→{p.blocked_code})")
+        print(f"  {icon} {p.location:8s} {p.param:20s} {detail}")
+
+    print(ui.rule())
+    active = report.active_points
+    if active:
+        best = active[0]
+        print(ui.green(f"  {len(active)} WAF-inspected injection point(s) found"))
+        print(ui.info(f"  best: ") + ui.bold(f"{best.location} {best.param}"))
+    else:
+        print(ui.gray("  no WAF-inspected injection points found"))
+    print(ui.gray(f"  {report.requests_used} requests used"))
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        _P(args.out).write_text(_json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+        print(ui.ok(f"discovery report written to {args.out}"))
     return 0
 
 
@@ -1190,10 +1260,18 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--rules-out", default="", help="write suggested WAF rules (Markdown) here")
     b.add_argument("--nuclei", default="", metavar="DIR",
                    help="write Nuclei v3 differential WAF-audit templates (one per verified bypass) to DIR")
+    b.add_argument("--exploit-guided", action="store_true",
+                   help="score THROUGH payloads by exploit signal (backend error, SQL error, reflection) — "
+                        "beam search prefers real exploits over harmless evasions")
     b.add_argument("--cross-axis", action="store_true",
                    help="second pass: cross-compose top mutated payloads × top transforms")
     b.add_argument("--cross-axis-budget", type=int, default=200,
                    help="request budget for cross-axis second pass (default: 200)")
+    b.add_argument("--profile", default="", metavar="FILE",
+                   help="target profile JSON: save state after each transform, "
+                        "resume with --resume to skip completed transforms")
+    b.add_argument("--resume", action="store_true",
+                   help="resume from --profile: skip already-completed transforms")
     b.set_defaults(func=cmd_bypass)
 
     ad = sub.add_parser("adaptive",
@@ -1229,6 +1307,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--cookie", default="")
     a.add_argument("--no-reconstruct", dest="reconstruct", action="store_false", default=True,
                    help="skip payload reconstruction from recon results")
+    a.add_argument("--profile", default="", metavar="FILE",
+                   help="target profile JSON: skip recon phases if profile has results")
     a.set_defaults(func=cmd_auto)
 
     w = sub.add_parser("watch",
@@ -1385,6 +1465,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target_args(fp)
     fp.set_defaults(func=cmd_fingerprint)
 
+    disc = sub.add_parser("discover",
+                          help="auto-discover WAF-inspected injection points on a target")
+    _add_target_args(disc)
+    disc.add_argument("--out", default="", help="write discovery report JSON here")
+    disc.set_defaults(func=cmd_discover)
+
     an = sub.add_parser("analyze", help="analyze a collected dataset/log JSONL offline (no network)")
     an.add_argument("log", help="path to a .jsonl log written by `waffen dataset`")
     an.add_argument("--html", default="", help="write a styled HTML coverage report here")
@@ -1406,6 +1492,14 @@ def build_parser() -> argparse.ArgumentParser:
     kb.add_argument("--manifest-url", default="", help="manifest JSON URL, for --kind manifest")
     kb.add_argument("--dest", default="./waffen_kb", help="local directory to store KB state in")
     kb.set_defaults(func=cmd_kb_update)
+
+    pf = sub.add_parser("profile", help="show or manage a saved target profile")
+    pf.add_argument("file", help="path to a profile .json file")
+    pf.add_argument("--show", action="store_true", default=True,
+                    help="print profile summary (default)")
+    pf.add_argument("--json", action="store_true",
+                    help="print the full profile as JSON")
+    pf.set_defaults(func=cmd_profile)
 
     m = sub.add_parser("mutators", help="list the built-in mutation library")
     m.add_argument("--class", dest="attack_class", default="", help="only mutators valid for this class")

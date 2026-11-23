@@ -44,7 +44,7 @@ def _decode(genome: Genome, seed: str, by_name: dict[str, object]) -> str:
         if m is None:
             continue
         try:
-            mp = m.apply(payload)
+            mp = m.apply_multi(payload)[0] if m.multi else m.apply(payload)
         except Exception:
             continue  # mutator crash — skip, don't break the search
         if not mp:

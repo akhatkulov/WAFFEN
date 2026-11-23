@@ -79,7 +79,8 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                canary_payload: str | None = None, canary_every: int = 25,
                do_verify: bool = False, sender=None, transport: str = "curl",
                on_event=None, scorer=None,
-               cross_axis: bool = False, cross_axis_budget: int = 200) -> list[BypassRun]:
+               cross_axis: bool = False, cross_axis_budget: int = 200,
+               exploit_guided: bool = False) -> list[BypassRun]:
     """Run the full sweep. `seeds` is an iterable of (attack_class, payload)."""
     runs: list[BypassRun] = []
     transforms = T.select(set(transform_names) if transform_names else None)
@@ -194,6 +195,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                         attack_class=cls, stop_on_first=stop_on_first,
                         verify_fn=verify_fn, on_event=on_event,
                         on_progress=progress_fn, concurrency=concurrency,
+                        exploit_guided=exploit_guided,
                     )
             except KeyboardInterrupt:
                 _sys.stderr.write("\n  [!] Interrupted — saving partial results\n")

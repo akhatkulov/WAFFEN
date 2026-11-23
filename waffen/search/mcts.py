@@ -190,7 +190,7 @@ def mcts_search(oracle: Oracle, seed: str, mutators, *,
                 if m is None:
                     continue
                 try:
-                    cp = m.apply(node.payload)
+                    cp = m.apply_multi(node.payload)[0] if m.multi else m.apply(node.payload)
                 except Exception:
                     continue  # mutator crash — skip, don't break the search
                 if not cp or cp == node.payload or name in node.children:
@@ -223,7 +223,7 @@ def mcts_search(oracle: Oracle, seed: str, mutators, *,
             name = _weighted_choice(rng, names, weights)
             m = by_name[name]
             try:
-                np_ = m.apply(cur_payload)
+                np_ = m.apply_multi(cur_payload)[0] if m.multi else m.apply(cur_payload)
             except Exception:
                 continue  # mutator crash — skip, don't break the search
             if not np_ or np_ == cur_payload:

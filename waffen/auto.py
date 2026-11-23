@@ -75,6 +75,7 @@ class AutoConfig:
     reconstruct: bool = True  # build exploit seeds from recon results
     transport: str = ""
     out: str = ""
+    profile_path: str = ""  # save/load target profile for resume
 
 
 # ---- the wizard -----------------------------------------------------------
