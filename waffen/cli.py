@@ -2636,6 +2636,51 @@ def cmd_plan(args) -> int:
     return 0
 
 
+def cmd_dtree(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .recon.decision_tree import WAFDecisionTreeProber, write_dtree_json
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method,
+                    timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("WAF decision tree for ") + ui.bold(args.target))
+    print(ui.gray("  fingerprints the WAF processing pipeline via strategic probing"))
+    print(ui.rule())
+
+    prober = WAFDecisionTreeProber(target)
+    report = prober.run()
+
+    print(ui.info("processing pipeline"))
+    for step, active in report.pipeline.processing_order():
+        mark = ui.green("✓") if active else ui.red("✗")
+        print(f"  {mark} {step}")
+
+    gaps = report.pipeline.gaps()
+    if gaps:
+        print("\n" + ui.info(f"gaps ({len(gaps)})"))
+        for g in gaps:
+            print(f"  {ui.yellow('!')} {g}")
+
+    if report.recommended_mutations:
+        print("\n" + ui.info(f"recommended mutations ({len(report.recommended_mutations)})"))
+        for i, m in enumerate(report.recommended_mutations, 1):
+            print(f"  {i}. {ui.bold(m)}")
+
+    print(ui.rule())
+    print(ui.gray(f"  {report.requests_used} requests used"))
+
+    if args.out:
+        write_dtree_json(report, args.out)
+        print(ui.ok(f"decision tree written to {args.out}"))
+    return 0
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -2678,7 +2723,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--method", default="GET")
     b.add_argument("--inject", default="query",
                    choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload", "auto"])
-    b.add_argument("--strategy", default="beam", choices=["beam", "genetic", "bestfirst", "mcts", "adaptive", "rl"],
+    b.add_argument("--strategy", default="beam", choices=["beam", "genetic", "bestfirst", "mcts", "adaptive", "rl", "dna"],
                    help="search strategy (adaptive = multi-stage pipeline)")
     b.add_argument("--branch", type=int, default=4, help="bestfirst: mutators tried per expansion")
     b.add_argument("--iterations", type=int, default=200, help="mcts: tree-search iterations")
@@ -3260,6 +3305,17 @@ def build_parser() -> argparse.ArgumentParser:
     pln.add_argument("--list-goals", action="store_true", help="list available attack goals")
     pln.add_argument("--out", default="", help="write plan JSON here")
     pln.set_defaults(func=cmd_plan)
+
+    dt = sub.add_parser("dtree",
+                        help="fingerprint the WAF processing pipeline — decode order, comment "
+                             "stripping, case handling, libinjection, scoring engine")
+    _add_target_args(dt)
+    dt.add_argument("--param", default="q", help="parameter to inject (default: q)")
+    dt.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                    help="where to inject (default: query)")
+    dt.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    dt.add_argument("--out", default="", help="write decision tree JSON here")
+    dt.set_defaults(func=cmd_dtree)
 
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)
