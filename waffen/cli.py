@@ -2741,6 +2741,90 @@ def cmd_synthesize_config(args) -> int:
     return 0
 
 
+def cmd_redteam(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .agent.redteam import AutonomousRedTeam, RedTeamConfig
+    classes = [c.strip() for c in args.classes.split(",") if c.strip()]
+    goals = [g.strip() for g in args.goals.split(",") if g.strip()]
+    cfg = RedTeamConfig(
+        target_url=args.target, path=args.path,
+        param=getattr(args, "param", "q"),
+        max_budget=args.budget,
+        attack_classes=classes or ["SQL Injection"],
+        goals=goals or ["dump_database"],
+        auto_exploit=not args.no_exploit,
+        generate_report=not args.no_report,
+        report_path=args.report or "redteam-report.html",
+        rules_path=args.rules_out or "redteam-rules.conf",
+        transport=args.transport,
+        timeout=args.timeout,
+        tls_verify=args.tls_verify,
+        block_signature=args.block_signature,
+        cookie=getattr(args, "cookie", "") or "",
+        extra_headers=tuple(getattr(args, "header", None) or ()),
+    )
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    agent = AutonomousRedTeam(cfg)
+    result = agent.run()
+    return 1 if result.bypasses_found > 0 else 0
+
+
+def cmd_adversarial(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .ai.adversarial import AdversarialGenerator, write_adversarial_json
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method,
+                    timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("adversarial ML analysis for ") + ui.bold(args.target))
+    print(ui.gray(f"  class={args.attack_class} budget={args.budget} techniques={args.techniques or 'all'}"))
+    print(ui.rule())
+
+    techniques = args.techniques.split(",") if args.techniques else None
+    gen = AdversarialGenerator(target, attack_class=args.attack_class)
+
+    def on_progress(tech, count):
+        print(f"  {ui.green('+')} {tech}: {count} boundary payload(s)")
+
+    result = gen.find_boundary(budget=args.budget, techniques=techniques,
+                               on_progress=on_progress)
+
+    print(f"\n{ui.info('estimated ML threshold:')} {ui.bold(f'{result.estimated_threshold:.2f}')}")
+
+    bypasses = result.adversarial_bypasses()
+    if bypasses:
+        print(f"\n{ui.green(f'  {len(bypasses)} ADVERSARIAL BYPASS(ES):')}")
+        for bp in bypasses[:10]:
+            print(f"    {bp.estimated_score:.2f}  {ui.bold(bp.payload[:55])}  "
+                  + ui.gray(bp.technique[:30]))
+    else:
+        print(ui.gray("\n  no adversarial bypasses found at the boundary"))
+
+    if result.feature_weights:
+        print(f"\n{ui.info('feature weights (classifier signal):')}")
+        for fw in result.feature_weights[:8]:
+            bar = ui.red(f"+{fw.delta:.2f}") if fw.delta > 0 else ui.gray(f"{fw.delta:.2f}")
+            print(f"    {bar}  {fw.feature}")
+
+    print(ui.rule())
+    print(ui.gray(f"  {result.requests_used} requests used"))
+
+    if args.out:
+        write_adversarial_json(result, args.out)
+        print(ui.ok(f"adversarial report written to {args.out}"))
+    return 0
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -3389,6 +3473,41 @@ def build_parser() -> argparse.ArgumentParser:
                     help="desired security grade (default: A)")
     sc.add_argument("--out", default="", help="output directory for config files")
     sc.set_defaults(func=cmd_synthesize_config)
+
+    rt = sub.add_parser("redteam",
+                        help="autonomous red team — zero-interaction full WAF assessment "
+                             "(recon→profile→plan→bypass→exploit→report)")
+    _add_target_args(rt)
+    rt.add_argument("--param", default="q", help="parameter name (default: q)")
+    rt.add_argument("--budget", type=int, default=5000,
+                    help="total request budget across all phases (default: 5000)")
+    rt.add_argument("--classes", default="SQL Injection",
+                    help="comma-separated attack classes (default: SQL Injection)")
+    rt.add_argument("--goals", default="dump_database",
+                    help="comma-separated goals (default: dump_database)")
+    rt.add_argument("--no-exploit", action="store_true",
+                    help="skip exploitation phase")
+    rt.add_argument("--no-report", action="store_true",
+                    help="skip report generation")
+    rt.add_argument("--report", default="", help="HTML report path (default: redteam-report.html)")
+    rt.add_argument("--rules-out", default="", help="WAF rules output path")
+    rt.set_defaults(func=cmd_redteam)
+
+    adv = sub.add_parser("adversarial",
+                         help="adversarial ML analysis — probe WAF classifier decision boundary")
+    _add_target_args(adv)
+    adv.add_argument("--param", default="q", help="parameter name (default: q)")
+    adv.add_argument("--inject", default="query", choices=["query", "body", "json"])
+    adv.add_argument("--method", default="GET")
+    adv.add_argument("--class", dest="attack_class", default="sqli",
+                     help="attack class (default: sqli)")
+    adv.add_argument("--budget", type=int, default=500,
+                     help="max requests for boundary probing (default: 500)")
+    adv.add_argument("--techniques", default="",
+                     help="comma-separated: binary_malice,perturbation_walk,"
+                          "semantic_interpolation,feature_knockout (default: all)")
+    adv.add_argument("--out", default="", help="write adversarial report JSON here")
+    adv.set_defaults(func=cmd_adversarial)
 
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)
