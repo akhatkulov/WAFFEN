@@ -880,6 +880,126 @@ SIGNATURES: list[dict] = [
         "cookie": [r"yx_ci_session=", r"yx_language="],
         "body": [],
     },
+    # =======================================================================
+    # Third expansion — additional vendors from the competitive target list
+    # that weren't in the wafw00f set above.
+    # =======================================================================
+    {
+        "name": "Google Cloud Armor",
+        "header": [],
+        "cookie": [],
+        "body": [r"your client has issued a malformed or illegal request.*google",
+                 r"<title>error 403 \(forbidden\)",
+                 r"gfe/\d"],
+    },
+    {
+        "name": "Coraza",
+        "header": [r"^server:.*coraza"],
+        "cookie": [],
+        "body": [r"coraza waf", r"transaction disrupted"],
+    },
+    {
+        "name": "StormWall",
+        "header": [r"^server:\s*stormwall"],
+        "cookie": [],
+        "body": [r"stormwall\.pro", r"stormwall"],
+    },
+    {
+        "name": "G-Core Labs",
+        "header": [r"^server:\s*gcore", r"^x-id:\s*gcore"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "CDNetworks",
+        "header": [r"^server:\s*cdnetworks", r"^x-cdn:\s*cdnetworks"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Vercel Firewall",
+        "header": [r"^server:\s*vercel", r"^x-vercel-id:"],
+        "cookie": [],
+        "body": [r"blocked by vercel firewall"],
+    },
+    {
+        "name": "KeyCDN",
+        "header": [r"^server:\s*keycdn", r"^x-edge-location:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Signal Sciences (Fastly)",
+        "header": [r"^x-sigsci-tags:", r"^x-sigsci-decision:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Edgecast (Edgio/Verizon)",
+        "header": [r"^server:\s*ecacc", r"^x-ec-custom-error:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Netlify",
+        "header": [r"^server:\s*netlify", r"^x-nf-request-id:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Fly.io",
+        "header": [r"^server:\s*fly/", r"^fly-request-id:"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Kong Gateway",
+        "header": [r"^server:\s*kong/", r"^via:\s*kong/"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Traefik",
+        "header": [r"^server:\s*traefik"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "HAProxy",
+        "header": [r"^server:\s*haproxy"],
+        "cookie": [],
+        "body": [r"<title>408 request time-out</title>"],
+    },
+    {
+        "name": "LiteSpeed",
+        "header": [r"^server:\s*litespeed"],
+        "cookie": [],
+        "body": [r"litespeed web server"],
+    },
+    {
+        "name": "Squarespace",
+        "header": [r"^x-servedby:\s*squarespace"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Incuri",
+        "header": [r"^server:\s*incuri"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "OpenResty",
+        "header": [r"^server:\s*openresty"],
+        "cookie": [],
+        "body": [],
+    },
+    {
+        "name": "Envoy",
+        "header": [r"^server:\s*envoy", r"^x-envoy-upstream-service-time:"],
+        "cookie": [],
+        "body": [],
+    },
 ]
 
 

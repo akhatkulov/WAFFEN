@@ -1123,6 +1123,55 @@ def cmd_ws(args) -> int:
     return 0
 
 
+def cmd_origin(args) -> int:
+    if not args.domain:
+        print("[err] --domain is required", file=sys.stderr)
+        return 2
+    from .recon.origin import OriginDiscovery
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("origin IP discovery for ") + ui.bold(args.domain))
+    print(ui.gray("  probes subdomains, MX records, SPF, response headers"))
+    print(ui.rule())
+
+    disc = OriginDiscovery(args.domain)
+    if args.verify:
+        report = disc.discover_and_verify()
+    else:
+        report = disc.discover()
+
+    if report.main_ips:
+        print(ui.gray(f"  main domain IPs: {', '.join(report.main_ips)}"))
+
+    if not report.candidates:
+        print(ui.gray("\n  no origin IP candidates found"))
+    else:
+        for c in report.candidates:
+            conf_color = {"high": ui.green, "medium": ui.yellow, "low": ui.gray}
+            label = conf_color.get(c.confidence, ui.gray)(f"{c.confidence.upper():8s}")
+            print(f"  {label} {c.ip:20s} {c.source:10s} {ui.gray(c.evidence)}")
+
+    if args.verify and report.verified:
+        print(ui.rule())
+        print(ui.green(f"  {len(report.verified)} verified origin IP(s):"))
+        for c in report.verified:
+            print(f"  {ui.green('✓')} {c.ip:20s} responds with Host: {args.domain}")
+    if args.verify and report.unverified:
+        for c in report.unverified:
+            print(f"  {ui.gray('✗')} {c.ip:20s} no response")
+
+    print(ui.rule())
+    print(ui.gray(f"  {len(report.candidates)} candidate(s), {len(report.verified)} verified"))
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        _P(args.out).write_text(_json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+        print(ui.ok(f"origin report written to {args.out}"))
+    return 0
+
+
 def cmd_discover(args) -> int:
     if not args.target:
         print("[err] --target is required", file=sys.stderr)
@@ -1594,6 +1643,69 @@ def cmd_corpus(args) -> int:
     return 0
 
 
+def cmd_oob(args) -> int:
+    from .oob.server import OOBServer
+    from .oob.payloads import oob_payloads_for
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+
+    if args.generate:
+        srv = OOBServer(external_host=args.external or "localhost", listen_port=args.port)
+        cb = srv.generate(context=args.context)
+        print(ui.info("generated callback:"))
+        print(f"  id:  {ui.bold(cb.id)}")
+        print(f"  url: {ui.bold(cb.url)}")
+        if args.context:
+            print(f"  ctx: {args.context}")
+        return 0
+
+    if args.payloads:
+        host = args.external or "localhost"
+        url = f"http://{host}:{args.port}/cb/TOKEN"
+        for cls in (args.payloads_class or "SSRF,XXE Injection,XSS Injection,Command Injection,SSTI").split(","):
+            cls = cls.strip()
+            pls = oob_payloads_for(cls, url)
+            if pls:
+                print(ui.info(f"{cls} ({len(pls)} payloads):"))
+                for p in pls:
+                    print(f"  {p[:100]}")
+                print()
+        return 0
+
+    srv = OOBServer(listen_host=args.listen, listen_port=args.port,
+                    external_host=args.external)
+    print(ui.info("OOB callback server"))
+    print(f"  listen:   {ui.bold(f'{srv.host}:{srv.port}')}")
+    print(f"  external: {ui.bold(f'{srv.external}:{srv.port}')}")
+    print(ui.gray("  Ctrl-C to stop\n"))
+
+    srv.start()
+    try:
+        while True:
+            import time as _t
+            _t.sleep(1)
+            received = srv.check_any()
+            if received:
+                for cb in received:
+                    if not hasattr(cb, "_printed"):
+                        print(f"  {ui.green('CALLBACK')} {cb.id}  "
+                              f"from={cb.source_ip}  method={cb.request_method}  "
+                              f"ctx={cb.payload_context}")
+                        cb._printed = True  # type: ignore[attr-defined]
+    except KeyboardInterrupt:
+        print(f"\n{ui.gray('  stopping...')}")
+    finally:
+        s = srv.summary()
+        print(f"  {ui.info('summary:')} {s['received']} received / {s['total']} total")
+        if args.out:
+            srv.write_jsonl(args.out)
+            print(ui.ok(f"callbacks written to {args.out}"))
+        srv.stop()
+    return 0
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -1911,6 +2023,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target_args(fp)
     fp.set_defaults(func=cmd_fingerprint)
 
+    og = sub.add_parser("origin", help="discover origin server IP behind a WAF (DNS, MX, SPF, headers)")
+    og.add_argument("--domain", required=True, help="target domain (e.g. example.com)")
+    og.add_argument("--verify", action="store_true",
+                    help="verify each candidate by sending a request with Host header")
+    og.add_argument("--out", default="", help="write origin report JSON here")
+    og.set_defaults(func=cmd_origin)
+
     sq = sub.add_parser("sequence",
                         help="run multi-request attack sequences (split attacks across HTTP requests)")
     _add_target_args(sq)
@@ -1991,6 +2110,17 @@ def build_parser() -> argparse.ArgumentParser:
     cp.add_argument("--class", dest="attack_class", default="", help="show payloads for this class")
     cp.add_argument("--count", dest="count_only", action="store_true", help="show count only")
     cp.set_defaults(func=cmd_corpus)
+
+    oob = sub.add_parser("oob", help="out-of-band callback server for blind vulnerability verification")
+    oob.add_argument("--listen", default="127.0.0.1", help="listen address (default: 127.0.0.1)")
+    oob.add_argument("--port", type=int, default=8888, help="listen port (default: 8888)")
+    oob.add_argument("--external", default="", help="external hostname/IP that the target can reach")
+    oob.add_argument("--out", default="", help="write callbacks JSONL here on exit")
+    oob.add_argument("--generate", action="store_true", help="generate one callback URL and exit")
+    oob.add_argument("--context", default="", help="context label for --generate")
+    oob.add_argument("--payloads", action="store_true", help="show OOB payloads for each class and exit")
+    oob.add_argument("--payloads-class", default="", help="comma-separated classes for --payloads")
+    oob.set_defaults(func=cmd_oob)
 
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)
