@@ -48,28 +48,40 @@ runs:
       run: pip install -e "${{ github.action_path }}"
       shell: bash
     - name: Run bypass search
+      env:
+        WAFFEN_TARGET: ${{ inputs.target }}
+        WAFFEN_PATH: ${{ inputs.path }}
+        WAFFEN_PARAM: ${{ inputs.param }}
+        WAFFEN_CLASS: ${{ inputs.class }}
+        WAFFEN_MAX_REQUESTS: ${{ inputs.max-requests }}
+        WAFFEN_BLOCK_SIG: ${{ inputs.block-signature }}
+        WAFFEN_SARIF: ${{ inputs.sarif }}
       run: |
-        ARGS="--target ${{ inputs.target }}"
-        ARGS="$ARGS --path ${{ inputs.path }}"
-        ARGS="$ARGS --param ${{ inputs.param }}"
-        ARGS="$ARGS --max-requests ${{ inputs.max-requests }}"
-        ARGS="$ARGS --calibrate --verify --stop-on-first"
-        ARGS="$ARGS --out waffen-results.jsonl"
-        if [ -n "${{ inputs.block-signature }}" ]; then
-          ARGS="$ARGS --block-signature \"${{ inputs.block-signature }}\""
+        ARGS=(
+          --target "$WAFFEN_TARGET"
+          --path "$WAFFEN_PATH"
+          --param "$WAFFEN_PARAM"
+          --max-requests "$WAFFEN_MAX_REQUESTS"
+          --calibrate --verify --stop-on-first
+          --out waffen-results.jsonl
+        )
+        if [ -n "$WAFFEN_BLOCK_SIG" ]; then
+          ARGS+=(--block-signature "$WAFFEN_BLOCK_SIG")
         fi
-        if [ -n "${{ inputs.sarif }}" ]; then
-          ARGS="$ARGS --sarif ${{ inputs.sarif }}"
+        if [ -n "$WAFFEN_SARIF" ]; then
+          ARGS+=(--sarif "$WAFFEN_SARIF")
         fi
-        if [ "${{ inputs.class }}" = "all-classes" ]; then
-          ARGS="$ARGS --all-classes"
+        if [ "$WAFFEN_CLASS" = "all-classes" ]; then
+          ARGS+=(--all-classes)
         else
-          ARGS="$ARGS --class \"${{ inputs.class }}\""
+          ARGS+=(--class "$WAFFEN_CLASS")
         fi
-        eval waffen bypass $ARGS || true
+        waffen bypass "${ARGS[@]}" || true
       shell: bash
     - name: Evaluate results
       id: evaluate
+      env:
+        FAIL_ON_BYPASS: ${{ inputs.fail-on-bypass }}
       run: |
         python3 -c "
         import json, sys, os
@@ -85,7 +97,8 @@ runs:
         verified = [f for f in findings if f.get('verified_exploitable')]
         total = len(findings)
         n_verified = len(verified)
-        result = 'fail' if (verified and '${{ inputs.fail-on-bypass }}' == 'true') else 'pass'
+        fail_on = os.environ.get('FAIL_ON_BYPASS', 'true')
+        result = 'fail' if (verified and fail_on == 'true') else 'pass'
         with open(os.environ['GITHUB_OUTPUT'], 'a') as gh:
             gh.write(f'findings={total}\n')
             gh.write(f'verified={n_verified}\n')
@@ -93,7 +106,9 @@ runs:
         if verified:
             print(f'::error::WAFFEN found {n_verified} verified WAF bypass(es) out of {total} findings')
             for v in verified[:5]:
-                print(f'  - {v.get(\"attack_class\",\"?\")} : {v.get(\"payload\",\"?\")[:60]}')
+                cls = v.get('attack_class', '?')
+                pay = v.get('payload', '?')[:60]
+                print(f'  - {cls} : {pay}')
         else:
             print(f'WAFFEN: {total} findings, 0 verified bypasses — WAF holds')
         if result == 'fail':
