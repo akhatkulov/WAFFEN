@@ -141,6 +141,8 @@ class Oracle:
         self.transport = transport
         if sender is not None:
             self._sender = sender               # explicit override (mocks/tests) — wins
+        elif transport == "h2":
+            self._sender = self._h2_send
         elif transport == "pooled":
             self._sender = self._pooled_send
         else:
@@ -409,6 +411,55 @@ class Oracle:
                     import sys
                     print(f"  [warn] pooled send failed: {exc}", file=sys.stderr)
                 self._close_conn()
+        return Response(DOWN, "000", 0, _time.monotonic() - t0, "")
+
+    # -- h2 (HTTP/2 raw socket) transport ------------------------------------
+    def _get_h2_conn(self, force_new: bool = False):
+        from .h2 import H2Connection
+        conn = getattr(self._tls, "h2conn", None)
+        if conn is not None and not force_new:
+            return conn
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass  # cleanup: h2 close must never crash
+        sp = urllib.parse.urlsplit(self.t.url())
+        host = sp.hostname
+        port = sp.port or 443
+        conn = H2Connection(host, port, timeout=self.t.timeout,
+                            tls_verify=self.t.tls_verify)
+        conn.connect()
+        self._tls.h2conn = conn
+        return conn
+
+    def _h2_send(self, payload: str) -> "Response":
+        if self.request_transform is not None:
+            return self._curl_send(payload)
+        import time as _time
+        method, target, headers, body = self._http_spec(payload)
+        t0 = _time.monotonic()
+        for attempt in (1, 2):
+            try:
+                conn = self._get_h2_conn(force_new=(attempt == 2))
+                hdrs = {k: v for k, v in headers.items()}
+                resp = conn.request(method, target, headers=hdrs,
+                                    body=body)
+                code = resp.status or "0"
+                text = resp.body.decode("utf-8", "replace")
+                return Response(self._classify(code, text), code,
+                                len(resp.body), _time.monotonic() - t0, text)
+            except Exception as exc:
+                if attempt == 2:
+                    import sys
+                    print(f"  [warn] h2 send failed: {exc}", file=sys.stderr)
+                try:
+                    h2c = getattr(self._tls, "h2conn", None)
+                    if h2c:
+                        h2c.close()
+                except Exception:
+                    pass
+                self._tls.h2conn = None
         return Response(DOWN, "000", 0, _time.monotonic() - t0, "")
 
     def _classify(self, code: str, body: str) -> str:

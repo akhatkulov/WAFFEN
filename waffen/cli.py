@@ -1914,7 +1914,7 @@ def _add_target_args(p):
                         "Threads through every inject mode and transform — run a search behind auth")
     p.add_argument("--cookie", default="", metavar="'a=1; b=2'",
                    help="cookie string sent with every request (session auth)")
-    p.add_argument("--transport", default="auto", choices=["auto", "curl", "pooled"],
+    p.add_argument("--transport", default="auto", choices=["auto", "curl", "pooled", "h2"],
                    help="request transport: 'auto' (default, pooled for plain requests, curl for "
                         "transforms), 'curl' (uniform subprocess), or 'pooled' (keep-alive "
                         "http.client — faster, falls back to curl for transform sends)")
@@ -2023,7 +2023,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="non-interactive: accept all defaults (requires --url)")
     a.add_argument("--out", default="", help="write findings JSONL here")
     a.add_argument("--timeout", type=int, default=10)
-    a.add_argument("--transport", default="auto", choices=["auto", "curl", "pooled"])
+    a.add_argument("--transport", default="auto", choices=["auto", "curl", "pooled", "h2"])
     a.add_argument("--tls-verify", action="store_true")
     a.add_argument("--block-signature", default="Request blocked by RedEye")
     a.add_argument("--header", "-H", action="append", default=None)
