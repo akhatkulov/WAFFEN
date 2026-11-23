@@ -18,6 +18,7 @@ from .kb.inject_map import effective as _effective_target
 from .mutate import REGISTRY
 from .search.beam import SearchResult, beam_search
 from .search.genetic import genetic_search
+from .search.genetic_dna import dna_genetic_search
 from .search.bestfirst import best_first_search
 from .search.mcts import mcts_search
 from .search.rl import rl_search, QLearningAgent
@@ -190,6 +191,15 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                         stop_on_first=stop_on_first, timing_threshold=tt,
                         verify_fn=verify_fn, on_event=on_event,
                         on_progress=progress_fn, concurrency=concurrency,
+                    )
+                elif strategy == "dna":
+                    res = dna_genetic_search(
+                        oracle, payload, mutators,
+                        population_size=pop_size, generations=generations,
+                        max_requests=max_requests, attack_class=cls,
+                        stop_on_first=stop_on_first, verify_fn=verify_fn,
+                        on_event=on_event, on_progress=progress_fn,
+                        concurrency=concurrency,
                     )
                 elif strategy == "rl":
                     _agent = rl_agent
