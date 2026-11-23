@@ -978,6 +978,94 @@ def cmd_sequence(args) -> int:
     return 0
 
 
+def cmd_fuzz(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    if not args.wordlist and not args.builtin and not args.corpus:
+        print("[err] give --wordlist FILE, --builtin NAME, or --corpus CLASS", file=sys.stderr)
+        return 2
+    from .fuzz.engine import AsyncFuzzer, FuzzReport
+    from .fuzz import wordlists
+
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method,
+                    timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+
+    if args.wordlist:
+        with open(args.wordlist) as f:
+            words = [line.strip() for line in f if line.strip()]
+    elif args.builtin:
+        gen = wordlists.BUILTINS.get(args.builtin)
+        if not gen:
+            print(f"[err] unknown builtin: {args.builtin}", file=sys.stderr)
+            return 2
+        words = gen()
+    else:
+        from .kb.corpus import corpus_for
+        words = corpus_for(args.corpus)
+        if not words:
+            print(f"[err] no corpus for class: {args.corpus}", file=sys.stderr)
+            return 2
+
+    filter_codes = {int(c) for c in args.mc.split(",") if c.strip()} if args.mc else None
+    hide_codes = {int(c) for c in args.fc.split(",") if c.strip()} if args.fc else None
+    filter_size = args.ms if args.ms >= 0 else None
+    hide_size = args.fs if args.fs >= 0 else None
+    match_regex = args.mr or None
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("fuzz ") + ui.bold(args.target + args.path)
+          + ui.gray(f"  param={args.param} inject={args.inject} threads={args.concurrency}"))
+    print(ui.gray(f"  {len(words)} payloads"))
+    print(ui.rule())
+
+    counters = {"done": 0, "blocked": 0}
+    lock = __import__("threading").Lock()
+
+    def on_result(res):
+        tag = ui.red(f"  {res.code}") if res.code >= 500 else ui.green(f"  {res.code}")
+        print(f"{tag}  {res.size:>6}B  {res.time_ms:>6.0f}ms  {res.payload[:60]}")
+
+    fuzzer = AsyncFuzzer(target, concurrency=args.concurrency,
+                         timeout=args.timeout,
+                         block_signature=args.block_signature)
+
+    try:
+        report = fuzzer.fuzz_wordlist(
+            words, on_result=on_result,
+            filter_codes=filter_codes, hide_codes=hide_codes,
+            filter_size=filter_size, hide_size=hide_size,
+            match_regex=match_regex,
+        )
+    except KeyboardInterrupt:
+        fuzzer.stop()
+        print(ui.warn("\n  Interrupted"))
+        return 1
+
+    print(ui.rule())
+    parts = []
+    if report.blocked:
+        parts.append(ui.red(f"blocked={report.blocked}"))
+    if report.passed:
+        parts.append(ui.green(f"passed={report.passed}"))
+    if report.errors:
+        parts.append(ui.yellow(f"errors={report.errors}"))
+    print(f"  [{report.total}/{len(words)}]  {' '.join(parts)}  |  "
+          + ui.bold(f"{report.rps:.0f} req/s") + f"  |  {report.elapsed:.1f}s")
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        _P(args.out).write_text(_json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+        print(ui.ok(f"results written to {args.out}"))
+
+    return 0
+
+
 def cmd_graphql(args) -> int:
     if not args.target:
         print("[err] --target is required", file=sys.stderr)
@@ -1706,6 +1794,108 @@ def cmd_oob(args) -> int:
     return 0
 
 
+def cmd_plugin(args) -> int:
+    from .plugins import (
+        PLUGIN_DIR, discover_plugins, load_plugin, unload_plugin,
+        is_disabled, disable_plugin, enable_plugin, create_plugin,
+    )
+    action = args.plugin_action
+
+    if action == "list":
+        from .plugins.loader import _find_plugin_entries
+        entries = _find_plugin_entries(PLUGIN_DIR)
+        if not entries:
+            print(ui.gray(f"  No plugins found in {PLUGIN_DIR}"))
+            print(ui.gray(f"  Create one: waffen plugin create <name>"))
+            return 0
+        print(ui.info(f"Installed plugins ({PLUGIN_DIR}):"))
+        print(ui.rule())
+        for entry in entries:
+            name = entry.stem if entry.is_file() else entry.name
+            disabled = is_disabled(entry if entry.is_dir() else PLUGIN_DIR / name)
+            plugins = discover_plugins() if not disabled else []
+            matched = [p for p in plugins if p.name == name or entry.name == name]
+            if disabled:
+                print(f"  {ui.gray('○')} {ui.gray(name):30s}  (disabled)")
+            elif matched:
+                p = matched[0]
+                print(f"  {ui.green('●')} {ui.bold(p.name):30s}  v{p.version}  by {p.author}")
+                print(f"      {ui.gray(p.description)}")
+                parts = []
+                if p.mutator_count:
+                    parts.append(f"mutators: {p.mutator_count}")
+                if p.transform_count:
+                    parts.append(f"transforms: {p.transform_count}")
+                if p.seed_count:
+                    parts.append(f"seeds: {p.seed_count}")
+                if parts:
+                    print(f"      {ui.gray('  '.join(parts))}")
+            else:
+                print(f"  {ui.yellow('?')} {name:30s}  (failed to load)")
+        return 0
+
+    elif action == "create":
+        name = args.name
+        if not name:
+            print("[err] plugin name required", file=sys.stderr)
+            return 2
+        try:
+            path = create_plugin(name, author=args.author, desc=args.desc)
+            print(ui.ok(f"Plugin created: {path}"))
+            print(ui.gray(f"  Edit {path / '__init__.py'} to add your mutators/transforms"))
+        except FileExistsError as e:
+            print(f"[err] {e}", file=sys.stderr)
+            return 1
+        return 0
+
+    elif action == "info":
+        name = args.name
+        if not name:
+            print("[err] plugin name required", file=sys.stderr)
+            return 2
+        info = load_plugin(name)
+        if info is None:
+            print(f"[err] plugin not found or disabled: {name}", file=sys.stderr)
+            return 1
+        print(ui.info(f"Plugin: {info.name}"))
+        print(f"  Version:     {info.version}")
+        print(f"  Author:      {info.author}")
+        print(f"  Description: {info.description}")
+        print(f"  Path:        {info.path}")
+        print(f"  Type:        {info.type}")
+        print(f"  Mutators:    {info.mutator_count}")
+        print(f"  Transforms:  {info.transform_count}")
+        print(f"  Seeds:       {info.seed_count}")
+        return 0
+
+    elif action == "disable":
+        name = args.name
+        if not name:
+            print("[err] plugin name required", file=sys.stderr)
+            return 2
+        if disable_plugin(name):
+            print(ui.ok(f"Plugin disabled: {name}"))
+        else:
+            print(f"[err] plugin not found: {name}", file=sys.stderr)
+            return 1
+        return 0
+
+    elif action == "enable":
+        name = args.name
+        if not name:
+            print("[err] plugin name required", file=sys.stderr)
+            return 2
+        if enable_plugin(name):
+            print(ui.ok(f"Plugin enabled: {name}"))
+        else:
+            print(f"[err] plugin not found or not disabled: {name}", file=sys.stderr)
+            return 1
+        return 0
+
+    print(f"[err] unknown plugin action: {action}", file=sys.stderr)
+    return 2
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -1967,6 +2157,25 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--out", default="dataset", help="output prefix (writes <out>.jsonl/.csv)")
     d.set_defaults(func=cmd_dataset)
 
+    fz = sub.add_parser("fuzz", help="high-speed wordlist-driven WAF testing (threaded keep-alive)")
+    _add_target_args(fz)
+    fz.add_argument("--param", default="q", help="parameter to fuzz (default: q)")
+    fz.add_argument("--inject", default="query", choices=["query", "body", "json", "path"],
+                    help="where to inject (default: query)")
+    fz.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    fz.add_argument("--wordlist", "-w", default="", help="path to a wordlist file (one payload per line)")
+    fz.add_argument("--builtin", default="", choices=["sqli", "xss", "path", "param"],
+                    help="use a built-in wordlist instead of --wordlist")
+    fz.add_argument("--corpus", default="", help="use the full corpus for this attack class (e.g. sqli)")
+    fz.add_argument("-c", "--concurrency", type=int, default=50, help="number of threads (default: 50)")
+    fz.add_argument("-mc", default="", help="match HTTP status codes (comma-sep, e.g. 200,500)")
+    fz.add_argument("-fc", default="", help="filter (hide) HTTP status codes (comma-sep, e.g. 403)")
+    fz.add_argument("-ms", type=int, default=-1, help="match response size (bytes)")
+    fz.add_argument("-fs", type=int, default=-1, help="filter (hide) response size (bytes)")
+    fz.add_argument("-mr", default="", help="match regex in response body")
+    fz.add_argument("--out", default="", help="write results JSONL here")
+    fz.set_defaults(func=cmd_fuzz)
+
     sm = sub.add_parser("smuggle", help="experimental: timing-based HTTP request-smuggling (desync) probes")
     _add_target_args(sm)
     sm.add_argument("--stall-factor", type=float, default=3.0,
@@ -2122,6 +2331,14 @@ def build_parser() -> argparse.ArgumentParser:
     oob.add_argument("--payloads-class", default="", help="comma-separated classes for --payloads")
     oob.set_defaults(func=cmd_oob)
 
+    pl = sub.add_parser("plugin", help="manage plugins (~/.waffen/plugins/)")
+    pl.add_argument("plugin_action", choices=["list", "create", "info", "disable", "enable"],
+                    help="action: list / create / info / disable / enable")
+    pl.add_argument("name", nargs="?", default="", help="plugin name (for create/info/disable/enable)")
+    pl.add_argument("--author", default="me", help="author name (for create)")
+    pl.add_argument("--desc", default="", help="description (for create)")
+    pl.set_defaults(func=cmd_plugin)
+
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)
     return p
@@ -2129,6 +2346,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    from .mutate import load_plugins
+    load_plugins()
     return args.func(args)
 
 
