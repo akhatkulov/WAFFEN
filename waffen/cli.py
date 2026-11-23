@@ -829,6 +829,91 @@ def cmd_fingerprint(args) -> int:
     return 0
 
 
+def cmd_sequence(args) -> int:
+    from .kb.sequences import all_sequences, get_sequence
+    from .core.sequence import SequenceRunner
+
+    if args.list_seqs:
+        bn = ui.banner(__version__)
+        if bn:
+            print(bn)
+        print(ui.info("built-in attack sequences"))
+        print(ui.rule())
+        for s in all_sequences():
+            print(f"  {ui.bold(s.name):30s}  {s.description}")
+            print(f"  {ui.gray(f'  {len(s.steps)} steps')}")
+        return 0
+
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+
+    target = Target(base_url=args.target, path=args.path, timeout=args.timeout,
+                    tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+
+    seqs = []
+    if args.run:
+        s = get_sequence(args.run)
+        if not s:
+            print(f"[err] unknown sequence: {args.run}", file=sys.stderr)
+            print(f"  available: {', '.join(s.name for s in all_sequences())}")
+            return 2
+        seqs = [s]
+    elif args.run_all:
+        seqs = all_sequences()
+    else:
+        print("[err] give --run <name>, --all, or --list", file=sys.stderr)
+        return 2
+
+    runner = SequenceRunner(target)
+    payload = args.payload
+
+    print(ui.info("sequence run for ") + ui.bold(args.target))
+    print(ui.gray(f"  payload={payload!r}  sequences={len(seqs)}"))
+    print(ui.rule())
+
+    all_results = []
+    for seq in seqs:
+        result = runner.run(seq, payload)
+        all_results.append(result)
+        marker = ui.green("● THRU") if result.through else ui.red("✗ BLOCK")
+        print(f"  {marker}  {ui.bold(seq.name):30s}  "
+              f"{result.final_code}  {result.requests} req")
+        for step in result.steps:
+            tag = "→" if step.index < len(seq.steps) - 1 else "★"
+            extr = ""
+            if step.extracted:
+                extr = ui.gray(f"  extracted: {list(step.extracted.keys())}")
+            print(f"    {tag} step {step.index}: {step.code}{extr}")
+
+    print(ui.rule())
+    throughs = sum(1 for r in all_results if r.through)
+    total = len(all_results)
+    print(f"  {throughs}/{total} sequences passed WAF")
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        data = []
+        for r in all_results:
+            data.append({
+                "sequence": r.sequence_name, "payload": r.payload,
+                "verdict": r.verdict, "final_code": r.final_code,
+                "requests": r.requests,
+                "steps": [{"index": s.index, "code": s.code,
+                           "extracted": s.extracted} for s in r.steps],
+            })
+        _P(args.out).write_text(_json.dumps(data, indent=2, ensure_ascii=False))
+        print(ui.ok(f"sequence results written to {args.out}"))
+
+    return 0
+
+
 def cmd_discover(args) -> int:
     if not args.target:
         print("[err] --target is required", file=sys.stderr)
@@ -1464,6 +1549,18 @@ def build_parser() -> argparse.ArgumentParser:
     fp = sub.add_parser("fingerprint", help="identify the WAF in front of a target")
     _add_target_args(fp)
     fp.set_defaults(func=cmd_fingerprint)
+
+    sq = sub.add_parser("sequence",
+                        help="run multi-request attack sequences (split attacks across HTTP requests)")
+    _add_target_args(sq)
+    sq.add_argument("--list", dest="list_seqs", action="store_true",
+                    help="list available built-in sequences")
+    sq.add_argument("--run", default="", help="run a specific sequence by name")
+    sq.add_argument("--all", dest="run_all", action="store_true",
+                    help="run all built-in sequences")
+    sq.add_argument("--payload", default="' OR 1=1--", help="payload to inject (default: ' OR 1=1--)")
+    sq.add_argument("--out", default="", help="write results JSONL here")
+    sq.set_defaults(func=cmd_sequence)
 
     disc = sub.add_parser("discover",
                           help="auto-discover WAF-inspected injection points on a target")
