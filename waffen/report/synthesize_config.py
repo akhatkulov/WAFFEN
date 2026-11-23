@@ -230,7 +230,7 @@ def _make_exclusion(fp_payload: str, engine: str) -> str:
             f'ctl:ruleRemoveTargetByTag=waffen;ARGS:{escaped}"'
         )
     elif engine in ("nginx", "naxsi"):
-        return f'BasicRule wl:0 "mz:$ARGS_VAR:*" "str:{escaped}";'
+        return f'BasicRule wl:1000 "mz:$ARGS_VAR:q" "str:{escaped}";'
     return f"# Exclude: {escaped}"
 
 

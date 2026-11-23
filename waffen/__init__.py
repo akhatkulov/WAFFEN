@@ -5,7 +5,7 @@ SDK quick start::
     from waffen import bypass, fingerprint, discover, exploit, fuzz
     result = bypass("https://target.com", path="/search", attack_class="sqli")
 """
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 
 # SDK convenience imports — lazy to avoid heavy import on CLI startup
 def __getattr__(name):
