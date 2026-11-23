@@ -82,7 +82,8 @@ def mcts_search(oracle: Oracle, seed: str, mutators, *,
                 decay: float = 0.5, max_requests: int = 400,
                 attack_class: str = "", stop_on_first: bool = False,
                 timing_threshold: float | None = None, seed_rng: int = 1337,
-                verify_fn=None, on_event=None, concurrency: int = 1) -> SearchResult:
+                verify_fn=None, on_event=None, on_progress=None,
+                concurrency: int = 1) -> SearchResult:
     """MCTS evasion search — see the module docstring for the selection /
     expansion / simulation / backprop loop. `mutators` is a list of Mutator
     objects (same contract as beam_search).
@@ -251,6 +252,12 @@ def mcts_search(oracle: Oracle, seed: str, mutators, *,
             nd.N += 1
             nd.W += best_r
         emit("iter", i=it, requests=oracle.requests, root_children=len(root.children))
+        if on_progress and (it % 10 == 0 or it == iterations - 1):
+            on_progress(depth=it, max_depth=iterations,
+                        requests=oracle.requests, budget=max_requests,
+                        throughs=len(result.findings),
+                        best_score=root.W / max(root.N, 1),
+                        frontier_size=len(root.children))
 
     result.requests = oracle.requests
     result.findings.sort(key=lambda f: (len(f.chain), f.payload))

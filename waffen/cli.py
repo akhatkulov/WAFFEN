@@ -125,6 +125,158 @@ def cmd_adaptive(args) -> int:
     return 0
 
 
+def cmd_minimize(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    if not args.payload and not args.findings:
+        print("[err] --payload or --findings required", file=sys.stderr)
+        return 2
+
+    from .search.minimize import PayloadMinimizer, _replay_chain
+    from .core.oracle import Oracle as _O
+
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method,
+                    timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+    oracle = _O(target, transport=args.transport)
+    minimizer = PayloadMinimizer(oracle)
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+
+    findings_to_minimize = []
+    if args.payload:
+        chain = [c.strip() for c in args.chain.split(",") if c.strip()] if args.chain else []
+        findings_to_minimize.append({
+            "payload": args.payload, "seed": args.seed or args.payload,
+            "chain": chain,
+        })
+    elif args.findings:
+        import json as _json
+        from pathlib import Path as _P
+        for line in _P(args.findings).read_text().strip().splitlines():
+            if not line.strip():
+                continue
+            rec = _json.loads(line)
+            findings_to_minimize.append({
+                "payload": rec.get("payload", ""),
+                "seed": rec.get("seed", ""),
+                "chain": rec.get("chain", []),
+            })
+
+    print(ui.info("minimize ") + ui.bold(args.target)
+          + ui.gray(f"   {len(findings_to_minimize)} finding(s)"))
+    print(ui.rule())
+
+    for i, f in enumerate(findings_to_minimize):
+        chain = f["chain"]
+        seed = f["seed"]
+        payload = f["payload"]
+
+        print(f"\n  {ui.bold(f'Finding {i+1}/{len(findings_to_minimize)}')}")
+        print(f"  {ui.gray('Seed:    ')} {seed[:60]}")
+        print(f"  {ui.gray('Chain:   ')} {' → '.join(chain) if chain else '(none)'}")
+        print(f"  {ui.gray('Payload: ')} {payload[:60]}")
+
+        result = minimizer.minimize(seed, chain, do_trim=not args.no_trim)
+
+        chain_changed = result.minimized_chain != result.original_chain
+        if chain_changed:
+            print(f"  {ui.green('Minimized chain:')} {' → '.join(result.minimized_chain)}"
+                  f" ({len(result.original_chain)} → {len(result.minimized_chain)} steps)")
+        else:
+            print(f"  {ui.gray('Chain:   already minimal')}")
+
+        print(f"  {ui.gray('Payload: ')} {result.minimized_payload[:60]}")
+
+        if result.trimmed_payload and result.trimmed_payload != result.minimized_payload:
+            print(f"  {ui.green('Trimmed: ')} {result.trimmed_payload[:60]}"
+                  f" ({len(result.minimized_payload)} → {len(result.trimmed_payload)} chars)")
+
+        print(f"  {ui.gray(f'{result.requests_used} requests used')}")
+
+    print(ui.rule())
+    return 0
+
+
+def cmd_diff(args) -> int:
+    if not args.waf:
+        print("[err] --waf is required", file=sys.stderr)
+        return 2
+    if not args.origin:
+        print("[err] --origin is required", file=sys.stderr)
+        return 2
+
+    from .recon.diff import DifferentialTester, write_diff_jsonl
+    from .kb.seeds import resolve_class
+
+    waf_path = args.waf_path or args.path
+    origin_path = args.origin_path or args.path
+    waf_target = Target(base_url=args.waf, path=waf_path, param=args.param,
+                        inject=args.inject, method=args.method, timeout=args.timeout,
+                        tls_verify=args.tls_verify, block_signature=args.block_signature,
+                        **_auth_kwargs(args))
+    origin_target = Target(base_url=args.origin, path=origin_path, param=args.param,
+                           inject=args.inject, method=args.method, timeout=args.timeout,
+                           tls_verify=args.tls_verify, block_signature=args.block_signature,
+                           **_auth_kwargs(args))
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("differential  ") + ui.bold(args.waf) + ui.gray("  vs  ") + ui.bold(args.origin))
+    print(ui.gray(f"  param={args.param} inject={args.inject} method={args.method}"))
+    print(ui.rule())
+
+    tester = DifferentialTester(waf_target, origin_target)
+
+    if args.findings:
+        print(ui.info(f"re-testing findings from {args.findings}"))
+        report = tester.run_findings(args.findings)
+    else:
+        classes = [resolve_class(c.strip()) for c in (args.attack_class or "sqli").split(",")]
+        print(ui.info(f"testing seeds for: {', '.join(classes)}"))
+        report = tester.run_seeds(classes)
+
+    # summary
+    print()
+    cats = [
+        ("WAF_ONLY", report.waf_only, ui.red),
+        ("BOTH_BLOCK", report.both_block, ui.gray),
+        ("BOTH_PASS", report.both_pass, ui.green),
+        ("APP_ONLY", report.app_only, ui.yellow),
+        ("DESYNC", report.desync, ui.yellow),
+    ]
+    for name, probes, color in cats:
+        cnt = str(len(probes))
+        label = color(f"{name:12s}")
+        suffix = ""
+        if name == "BOTH_PASS" and probes:
+            suffix = ui.bold("  ← potential bypass!")
+        elif name == "DESYNC" and probes:
+            suffix = ui.gray("  ← investigate")
+        print(f"  {label} {cnt:>3}  payloads{suffix}")
+
+    # detail for interesting categories
+    for tag, probes in [("BOTH_PASS", report.both_pass), ("DESYNC", report.desync)]:
+        if probes:
+            print(f"\n  {ui.bold(tag)} details:")
+            for p in probes[:20]:
+                cls_tag = ui.gray(f"[{p.attack_class}]") if p.attack_class else ""
+                print(f"    {p.payload[:50]:50s}  WAF={p.waf_code}  Origin={p.origin_code}  {cls_tag}")
+
+    print(ui.rule())
+    print(ui.gray(f"  {len(report.probes)} probes total"))
+
+    if args.out:
+        write_diff_jsonl(report, args.out)
+        print(ui.ok(f"diff report written to {args.out}"))
+    return 0
+
+
 def cmd_watch(args) -> int:
     if not args.findings:
         print("[err] --findings is required", file=sys.stderr)
@@ -1092,6 +1244,42 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--once", action="store_true", help="run one check and exit")
     w.add_argument("--out", default="", help="write watch report JSONL here")
     w.set_defaults(func=cmd_watch)
+
+    mn = sub.add_parser("minimize",
+                        help="shrink bypass findings to their minimal form (chain reduction + text trimming)")
+    _add_target_args(mn)
+    mn.add_argument("--payload", default="", help="single payload to minimize")
+    mn.add_argument("--seed", default="", help="original seed before mutation (for chain replay)")
+    mn.add_argument("--chain", default="", help="comma-separated mutator chain (e.g. base64,url_encode)")
+    mn.add_argument("--findings", default="", help="JSONL from `waffen bypass --out` — minimize all")
+    mn.add_argument("--param", default="q")
+    mn.add_argument("--inject", default="query", choices=["query", "body", "json"])
+    mn.add_argument("--method", default="GET")
+    mn.add_argument("--no-trim", action="store_true", help="skip text trimming (chain reduction only)")
+    mn.set_defaults(func=cmd_minimize)
+
+    df = sub.add_parser("diff",
+                        help="differential testing: compare WAF vs bare origin to disambiguate blocks")
+    df.add_argument("--waf", required=True, help="WAF-fronted target URL")
+    df.add_argument("--origin", required=True, help="bare origin target URL (no WAF)")
+    df.add_argument("--path", default="/", help="shared request path (default: /)")
+    df.add_argument("--waf-path", default="", help="override path for WAF target only")
+    df.add_argument("--origin-path", default="", help="override path for origin target only")
+    df.add_argument("--param", default="q", help="parameter name (default: q)")
+    df.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                    help="where to inject (default: query)")
+    df.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    df.add_argument("--class", dest="attack_class", default="sqli",
+                    help="attack class(es) for KB seeds, comma-separated (default: sqli)")
+    df.add_argument("--findings", default="",
+                    help="JSONL from `waffen bypass --out` to re-test differentially")
+    df.add_argument("--timeout", type=int, default=15)
+    df.add_argument("--tls-verify", action="store_true")
+    df.add_argument("--block-signature", default="Request blocked by RedEye")
+    df.add_argument("--header", "-H", action="append", default=None)
+    df.add_argument("--cookie", default="")
+    df.add_argument("--out", default="", help="write diff report JSONL here")
+    df.set_defaults(func=cmd_diff)
 
     e = sub.add_parser("eval", help="score WAF coverage + false-positive rate over a corpus")
     _add_target_args(e)

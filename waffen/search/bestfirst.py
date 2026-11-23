@@ -25,7 +25,8 @@ def best_first_search(oracle: Oracle, seed: str, mutators, *,
                       branch: int = 4, max_requests: int = 400,
                       attack_class: str = "", stop_on_first: bool = False,
                       timing_threshold: float | None = None, verify_fn=None,
-                      on_event=None, concurrency: int = 1) -> SearchResult:
+                      on_event=None, on_progress=None,
+                      concurrency: int = 1) -> SearchResult:
     """Best-first evasion search. `branch` = mutators tried per expansion (by UCB).
 
     `concurrency` (default 1, same contract as beam_search): with 1, each
@@ -175,6 +176,11 @@ def best_first_search(oracle: Oracle, seed: str, mutators, *,
 
         emit("expanded", frontier=len(heap), requests=oracle.requests,
              bandit=bandit.stats())
+        if on_progress:
+            on_progress(depth=oracle.requests, max_depth=max_requests,
+                        requests=oracle.requests, budget=max_requests,
+                        throughs=len(result.findings), best_score=-neg if neg else 0.0,
+                        frontier_size=len(heap))
 
     result.requests = oracle.requests
     result.findings.sort(key=lambda f: (len(f.chain), f.payload))

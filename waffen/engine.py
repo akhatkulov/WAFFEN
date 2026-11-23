@@ -83,13 +83,34 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
     """Run the full sweep. `seeds` is an iterable of (attack_class, payload)."""
     runs: list[BypassRun] = []
     transforms = T.select(set(transform_names) if transform_names else None)
+    n_transforms = len(transforms)
+    seed_list = list(seeds)
+    total_runs = n_transforms * len(seed_list)
+
+    import sys as _sys
+
+    def _default_progress(*, depth, max_depth, requests, budget, throughs,
+                          best_score, frontier_size):
+        label = strategy[:5]
+        line = (f"    {label} {depth}/{max_depth} | "
+                f"{requests}/{budget} req | "
+                f"{throughs} thru | best={best_score:.1f} | "
+                f"frontier={frontier_size}")
+        _sys.stderr.write(f"\r{line:<72}")
+        _sys.stderr.flush()
+
+    progress_fn = _default_progress if on_event else None
 
     # calibration / normalization probes are class-less, so resolve --inject auto
     # to a concrete mode (query) for them; per-class routing applies to the seeds below.
     from .kb.inject_map import resolve_base as _resolve_base
     probe_target = _resolve_base(target)
 
-    for tr in transforms:
+    run_idx = 0
+    interrupted = False
+    for tr_idx, tr in enumerate(transforms):
+        if interrupted:
+            break
         rt = None if tr.name == "identity" else tr
         cal = None
         tt = timing_threshold
@@ -111,7 +132,7 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                          blind_to=getattr(norm_profile, "blind_to", None),
                          n_recommended=len(getattr(norm_profile, "recommended_mutators", []) or []))
 
-        for cls, payload in seeds:
+        for cls, payload in seed_list:
             # --inject auto: route each class to its correct injection point
             # (traversal->path, upload->multipart, ...) instead of forcing one.
             eff = _effective_target(target, cls)
@@ -132,39 +153,60 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                 def verify_fn(p, _cls=cls, _rt=rt, _eff=eff):  # fresh oracle so verify reqs stay separate
                     return _verify(Oracle(_eff, sender=sender, request_transform=_rt, transport=transport), p, _cls)
 
-            if strategy == "genetic":
-                res = genetic_search(
-                    oracle, payload, mutators,
-                    pop_size=pop_size, generations=generations,
-                    max_requests=max_requests, attack_class=cls,
-                    stop_on_first=stop_on_first, verify_fn=verify_fn, on_event=on_event,
-                    concurrency=concurrency,
-                )
-            elif strategy == "mcts":
-                res = mcts_search(
-                    oracle, payload, mutators,
-                    iterations=iterations, rollout_depth=rollout_depth,
-                    max_requests=max_requests, attack_class=cls,
-                    stop_on_first=stop_on_first, timing_threshold=tt,
-                    verify_fn=verify_fn, on_event=on_event,
-                    concurrency=concurrency,
-                )
-            elif strategy == "bestfirst":
-                res = best_first_search(
-                    oracle, payload, mutators,
-                    branch=branch, max_requests=max_requests, attack_class=cls,
-                    stop_on_first=stop_on_first, timing_threshold=tt,
-                    verify_fn=verify_fn, on_event=on_event,
-                    concurrency=concurrency,
-                )
-            else:
-                res = beam_search(
-                    oracle, payload, mutators,
-                    width=width, depth=depth, max_requests=max_requests,
-                    attack_class=cls, stop_on_first=stop_on_first,
-                    verify_fn=verify_fn, on_event=on_event,
-                    concurrency=concurrency,
-                )
+            run_idx += 1
+            if on_event:
+                _sys.stderr.write(
+                    f"\r  [{run_idx}/{total_runs}] transform={tr.name}  "
+                    f"seed={payload[:30]!r:<32}\n")
+                _sys.stderr.flush()
+
+            try:
+                if strategy == "genetic":
+                    res = genetic_search(
+                        oracle, payload, mutators,
+                        pop_size=pop_size, generations=generations,
+                        max_requests=max_requests, attack_class=cls,
+                        stop_on_first=stop_on_first, verify_fn=verify_fn,
+                        on_event=on_event, on_progress=progress_fn,
+                        concurrency=concurrency,
+                    )
+                elif strategy == "mcts":
+                    res = mcts_search(
+                        oracle, payload, mutators,
+                        iterations=iterations, rollout_depth=rollout_depth,
+                        max_requests=max_requests, attack_class=cls,
+                        stop_on_first=stop_on_first, timing_threshold=tt,
+                        verify_fn=verify_fn, on_event=on_event,
+                        on_progress=progress_fn, concurrency=concurrency,
+                    )
+                elif strategy == "bestfirst":
+                    res = best_first_search(
+                        oracle, payload, mutators,
+                        branch=branch, max_requests=max_requests, attack_class=cls,
+                        stop_on_first=stop_on_first, timing_threshold=tt,
+                        verify_fn=verify_fn, on_event=on_event,
+                        on_progress=progress_fn, concurrency=concurrency,
+                    )
+                else:
+                    res = beam_search(
+                        oracle, payload, mutators,
+                        width=width, depth=depth, max_requests=max_requests,
+                        attack_class=cls, stop_on_first=stop_on_first,
+                        verify_fn=verify_fn, on_event=on_event,
+                        on_progress=progress_fn, concurrency=concurrency,
+                    )
+            except KeyboardInterrupt:
+                _sys.stderr.write("\n  [!] Interrupted — saving partial results\n")
+                interrupted = True
+                break
+
+            if on_event:
+                n_thru = len(res.findings)
+                mark = "✓" if n_thru else "―"
+                _sys.stderr.write(
+                    f"\r  [{run_idx}/{total_runs}] {tr.name}: "
+                    f"{n_thru} through ({res.requests} req) {mark}\n")
+                _sys.stderr.flush()
 
             # verifications now live on the findings themselves (set inline); expose a
             # payload->record map for the report layer, keeping BypassRun's shape.

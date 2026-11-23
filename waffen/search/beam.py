@@ -89,7 +89,8 @@ def _expand_frontier(frontier, mutators, visited: set[str]):
 def beam_search(oracle: Oracle, seed: str, mutators, *,
                 width: int = 6, depth: int = 4, max_requests: int = 400,
                 attack_class: str = "", stop_on_first: bool = False,
-                verify_fn=None, on_event=None, concurrency: int = 1) -> SearchResult:
+                verify_fn=None, on_event=None, on_progress=None,
+                concurrency: int = 1) -> SearchResult:
     """Search for evasion chains. `mutators` is a list of Mutator objects.
 
     `verify_fn(payload)->Verification`, when given, inline-verifies each THROUGH;
@@ -159,9 +160,14 @@ def beam_search(oracle: Oracle, seed: str, mutators, *,
                 break
             candidates.sort(key=lambda s: -s.score)
             frontier = candidates[:width]
+            best = frontier[0].score if frontier else 0.0
             emit("depth_done", depth=d, kept=len(frontier),
-                 best_score=frontier[0].score if frontier else 0.0,
-                 requests=oracle.requests)
+                 best_score=best, requests=oracle.requests)
+            if on_progress:
+                on_progress(depth=d, max_depth=depth,
+                            requests=oracle.requests, budget=max_requests,
+                            throughs=len(result.findings), best_score=best,
+                            frontier_size=len(frontier))
             if oracle.requests >= max_requests:
                 break
 
@@ -215,9 +221,14 @@ def beam_search(oracle: Oracle, seed: str, mutators, *,
             break
         candidates.sort(key=lambda s: -s.score)
         frontier = candidates[:width]
+        best = frontier[0].score if frontier else 0.0
         emit("depth_done", depth=d, kept=len(frontier),
-             best_score=frontier[0].score if frontier else 0.0,
-             requests=oracle.requests)
+             best_score=best, requests=oracle.requests)
+        if on_progress:
+            on_progress(depth=d, max_depth=depth,
+                        requests=oracle.requests, budget=max_requests,
+                        throughs=len(result.findings), best_score=best,
+                        frontier_size=len(frontier))
         if oracle.requests >= max_requests:
             break
 

@@ -147,7 +147,8 @@ def genetic_search(oracle: Oracle, seed: str, mutators, *,
                     max_requests: int = 400, attack_class: str = "",
                     elitism: int = 4, mutation_rate: float = 0.6,
                     stop_on_first: bool = False, verify_fn=None, on_event=None,
-                    seed_rng: int = 1337, concurrency: int = 1) -> SearchResult:
+                    on_progress=None, seed_rng: int = 1337,
+                    concurrency: int = 1) -> SearchResult:
     """Evolve mutator-name chains against `oracle` to find evasion chains.
 
     `mutators` is a list of Mutator objects (same contract as beam_search).
@@ -259,6 +260,11 @@ def genetic_search(oracle: Oracle, seed: str, mutators, *,
         best_score = scored[0][0] if scored else 0.0
         emit("generation", gen=gen, pop=len(scored), best_score=best_score,
              requests=oracle.requests, findings=len(result.findings))
+        if on_progress:
+            on_progress(depth=gen, max_depth=generations,
+                        requests=oracle.requests, budget=max_requests,
+                        throughs=len(result.findings), best_score=best_score,
+                        frontier_size=len(scored))
 
         if not elites:
             break
