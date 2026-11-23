@@ -11,6 +11,7 @@ from . import advanced  # noqa: F401  (side effect: registers Phase B advanced m
 from . import semantic_frag  # noqa: F401  (side effect: registers semantic fragmentation mutators)
 from . import ssti_ssrf_xxe  # noqa: F401  (side effect: registers SSTI/SSRF/XXE mutators)
 from . import sql_ast  # noqa: F401  (side effect: registers SQL-AST token-level mutators)
+from . import semantic  # noqa: F401  (side effect: registers semantic preservation mutators)
 
 def load_plugins():
     """Load plugins from ~/.waffen/plugins/ into the global registry.

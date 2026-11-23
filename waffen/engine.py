@@ -20,6 +20,7 @@ from .search.beam import SearchResult, beam_search
 from .search.genetic import genetic_search
 from .search.bestfirst import best_first_search
 from .search.mcts import mcts_search
+from .search.rl import rl_search, QLearningAgent
 
 try:
     from .verify.verifier import verify as _verify
@@ -80,7 +81,9 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                do_verify: bool = False, sender=None, transport: str = "curl",
                on_event=None, scorer=None,
                cross_axis: bool = False, cross_axis_budget: int = 200,
-               exploit_guided: bool = False) -> list[BypassRun]:
+               exploit_guided: bool = False,
+               rl_agent: QLearningAgent | None = None,
+               save_policy: str = "", load_policy: str = "") -> list[BypassRun]:
     """Run the full sweep. `seeds` is an iterable of (attack_class, payload)."""
     runs: list[BypassRun] = []
     transforms = T.select(set(transform_names) if transform_names else None)
@@ -188,6 +191,19 @@ def run_bypass(target: Target, seeds, *, strategy: str = "beam",
                         verify_fn=verify_fn, on_event=on_event,
                         on_progress=progress_fn, concurrency=concurrency,
                     )
+                elif strategy == "rl":
+                    _agent = rl_agent
+                    if _agent is None and load_policy:
+                        _agent = QLearningAgent.load_policy(load_policy)
+                    res = rl_search(
+                        oracle, payload, mutators,
+                        max_requests=max_requests, attack_class=cls,
+                        stop_on_first=stop_on_first, verify_fn=verify_fn,
+                        on_event=on_event, on_progress=progress_fn,
+                        agent=_agent, concurrency=concurrency,
+                    )
+                    if save_policy and hasattr(res, "_rl_agent"):
+                        res._rl_agent.save_policy(save_policy)
                 else:
                     res = beam_search(
                         oracle, payload, mutators,

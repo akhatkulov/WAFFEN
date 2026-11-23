@@ -627,6 +627,8 @@ def cmd_bypass(args) -> int:
         cross_axis=getattr(args, "cross_axis", False),
         cross_axis_budget=getattr(args, "cross_axis_budget", 200),
         exploit_guided=getattr(args, "exploit_guided", False),
+        save_policy=getattr(args, "save_policy", ""),
+        load_policy=getattr(args, "load_policy", ""),
     )
     report.print_engine_summary(runs)
     if args.out:
@@ -2296,6 +2298,50 @@ def cmd_grammar(args) -> int:
     return 0
 
 
+def cmd_semantic(args) -> int:
+    from .mutate.semantic import SemanticEngine, semantic_all
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("semantic equivalence engine")
+          + ui.gray(f"   dbms={args.dbms}  count={args.count}"))
+    print(ui.rule())
+
+    engine = SemanticEngine(dbms=args.dbms, max_variants=args.count)
+
+    if args.payload:
+        payloads = engine.semantic_expand(args.payload)
+        print(ui.info(f"expanding: ") + ui.bold(args.payload))
+    elif args.mode == "tautology":
+        payloads = engine.generate_tautology_injections()
+        print(ui.info("tautology injections"))
+    elif args.mode == "union":
+        payloads = engine.generate_union_injections(columns=args.columns)
+        print(ui.info(f"UNION injections (columns={args.columns})"))
+    elif args.mode == "blind":
+        payloads = engine.generate_blind_injections()
+        print(ui.info("blind boolean injections"))
+    elif args.mode == "time":
+        payloads = engine.generate_time_injections()
+        print(ui.info("time-based blind injections"))
+    else:
+        payloads = engine.generate_tautology_injections()
+        print(ui.info("tautology injections (default)"))
+
+    payloads = payloads[:args.count]
+    for i, p in enumerate(payloads):
+        print(f"  {ui.gray(f'{i+1:3d}')}  {p}")
+
+    print(ui.rule())
+    print(ui.gray(f"  {len(payloads)} semantically equivalent payloads"))
+
+    if args.out:
+        from pathlib import Path
+        Path(args.out).write_text("\n".join(payloads) + "\n")
+        print(ui.ok(f"written to {args.out}"))
+    return 0
+
+
 def cmd_synthesize(args) -> int:
     from .ai.synthesize import PayloadSynthesizer, SynthesisConfig, SynthesisContext
 
@@ -2388,6 +2434,74 @@ def cmd_synthesize(args) -> int:
     return 0
 
 
+def cmd_plan(args) -> int:
+    from .plan import AttackPlanner, GOALS
+    from .plan.planner import write_plan_json
+
+    if args.list_goals:
+        print(ui.info("Available attack goals:"))
+        for name, goal in GOALS.items():
+            print(f"  {ui.bold(name):25s} {goal.description}")
+        return 0
+
+    if not args.target and not args.goal:
+        print("[err] --target and --goal are required (or --list-goals)", file=sys.stderr)
+        return 2
+
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("attack planner for ") + ui.bold(args.target))
+    print(ui.rule())
+
+    planner = AttackPlanner(target)
+
+    if args.discover:
+        from .core.oracle import Oracle
+        oracle = Oracle(target, transport=args.transport)
+        planner._oracle = oracle
+        print(ui.gray("  probing endpoints for WAF protection..."))
+        planner.discover()
+    else:
+        planner.build_graph()
+
+    g = planner.graph
+    print(f"  Attack graph: {len(g.nodes)} nodes, {len(g.edges)} edges")
+
+    if args.goal:
+        plan = planner.plan_attack(args.goal)
+        print()
+        print(plan.summary())
+        if plan.bypasses_needed:
+            print()
+            print(ui.red(f"  ⚡ {len(plan.bypasses_needed)} WAF bypass(es) required:"))
+            for e in plan.bypasses_needed:
+                print(f"    - {e.method} {e.path} ({e.description})")
+
+        if args.execute:
+            print()
+            print(ui.info("Executing plan (dry-run)..."))
+            result = planner.execute_plan(plan)
+            for sr in result.steps:
+                icon = ui.green("✓") if sr.success else ui.red("✗")
+                print(f"  {icon} {sr.edge.method} {sr.edge.path} → {sr.response_code}")
+            if result.success:
+                print(ui.green(f"\n  Plan executed successfully"))
+            else:
+                print(ui.red(f"\n  Plan failed at step {len(result.steps)}"))
+
+        if args.out:
+            write_plan_json(plan, args.out)
+            print(ui.ok(f"plan written to {args.out}"))
+
+    print(ui.rule())
+    return 0
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -2429,7 +2543,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--method", default="GET")
     b.add_argument("--inject", default="query",
                    choices=["query", "path", "rawpath", "body", "json", "header", "cookie", "upload", "auto"])
-    b.add_argument("--strategy", default="beam", choices=["beam", "genetic", "bestfirst", "mcts", "adaptive"],
+    b.add_argument("--strategy", default="beam", choices=["beam", "genetic", "bestfirst", "mcts", "adaptive", "rl"],
                    help="search strategy (adaptive = multi-stage pipeline)")
     b.add_argument("--branch", type=int, default=4, help="bestfirst: mutators tried per expansion")
     b.add_argument("--iterations", type=int, default=200, help="mcts: tree-search iterations")
@@ -2491,6 +2605,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="show the search plan and time estimate, then exit without sending any requests")
     b.add_argument("--grammar", default="", metavar="TYPE",
                    help="use grammar-guided seed generation (sqli/xss/ssti) instead of KB seeds")
+    b.add_argument("--save-policy", default="", metavar="FILE",
+                   help="(RL strategy) save the learned Q-table policy to a JSON file after the run")
+    b.add_argument("--load-policy", default="", metavar="FILE",
+                   help="(RL strategy) load a previously learned policy to warm-start the agent")
     b.set_defaults(func=cmd_bypass)
 
     ad = sub.add_parser("adaptive",
@@ -2926,6 +3044,24 @@ def build_parser() -> argparse.ArgumentParser:
     gr.add_argument("--out", default="", help="write payloads to file (one per line)")
     gr.set_defaults(func=cmd_grammar)
 
+    se = sub.add_parser("semantic",
+                        help="semantic preservation engine — generate SQL-equivalent payloads "
+                             "that express the same logic in different syntax")
+    se.add_argument("--payload", default="",
+                    help="payload to expand into semantic equivalents")
+    se.add_argument("--mode", default="tautology",
+                    choices=["tautology", "union", "blind", "time"],
+                    help="generation mode when no --payload given (default: tautology)")
+    se.add_argument("--dbms", default="generic",
+                    choices=["generic", "sqlite", "mysql", "postgresql", "mssql"],
+                    help="target database engine (default: generic)")
+    se.add_argument("--count", "-n", type=int, default=50,
+                    help="max payloads to generate (default: 50)")
+    se.add_argument("--columns", type=int, default=3,
+                    help="column count for UNION mode (default: 3)")
+    se.add_argument("--out", default="", help="write payloads to file (one per line)")
+    se.set_defaults(func=cmd_semantic)
+
     sy = sub.add_parser("synthesize",
                         help="LLM-guided payload synthesis — generate context-aware bypass payloads "
                              "using Claude/GPT (requires API key)")
@@ -2948,6 +3084,20 @@ def build_parser() -> argparse.ArgumentParser:
     sy.add_argument("--waf-name", default="", help="WAF name for context")
     sy.add_argument("--out", default="", help="write payloads to file (one per line)")
     sy.set_defaults(func=cmd_synthesize)
+
+    pln = sub.add_parser("plan",
+                         help="multi-step attack planner — model target as graph, find optimal attack chains")
+    _add_target_args(pln)
+    pln.add_argument("--param", default="q", help="primary parameter")
+    pln.add_argument("--goal", default="",
+                     help="attack goal: dump_database, admin_access, read_file, rce, xss_stored, account_takeover")
+    pln.add_argument("--discover", action="store_true",
+                     help="probe the live target to map WAF protection per endpoint")
+    pln.add_argument("--execute", action="store_true",
+                     help="execute the plan (dry-run without this flag)")
+    pln.add_argument("--list-goals", action="store_true", help="list available attack goals")
+    pln.add_argument("--out", default="", help="write plan JSON here")
+    pln.set_defaults(func=cmd_plan)
 
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)
