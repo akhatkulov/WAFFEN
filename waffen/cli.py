@@ -43,14 +43,15 @@ def _auth_kwargs(args):
 
 def _gather_seeds(args):
     seeds = []
+    use_corpus = getattr(args, "corpus", False)
     if args.payload:
         seeds.append((args.attack_class or "", args.payload))
     elif args.attack_class:
-        for p in kb_seeds.seeds_for(args.attack_class):
+        for p in kb_seeds.seeds_for(args.attack_class, include_corpus=use_corpus):
             seeds.append((args.attack_class, p))
     if args.all_classes:
         for c in kb_seeds.classes():
-            for p in kb_seeds.seeds_for(c):
+            for p in kb_seeds.seeds_for(c, include_corpus=use_corpus):
                 seeds.append((c, p))
     return seeds
 
@@ -568,6 +569,24 @@ def cmd_bypass(args) -> int:
                     print(rendered)
         else:
             print("\n" + ui.gray("(no verified-exploitable findings — no defense rules generated)"))
+
+    if getattr(args, "html_report", ""):
+        from .report.professional import generate_html_report, write_html_report, ReportConfig
+        all_f = []
+        for run in runs:
+            for f in run.result.findings:
+                rec = f.as_dict()
+                rec["request_transform"] = run.transform
+                v = run.verifications.get(f.payload)
+                if v is not None:
+                    rec["verified_exploitable"] = getattr(v, "exploitable", None)
+                    rec["verify_confidence"] = getattr(v, "confidence", None)
+                    rec["verify_reason"] = getattr(v, "reason", None)
+                all_f.append(rec)
+        cfg = ReportConfig(target=args.target or "mock://local")
+        html_str = generate_html_report(all_f, cfg)
+        write_html_report(html_str, args.html_report)
+        print(ui.ok(f"HTML report written to {args.html_report}"))
     return 0
 
 
@@ -1392,6 +1411,42 @@ def cmd_defend(args) -> int:
     return 0
 
 
+def cmd_report(args) -> int:
+    from .report.professional import (
+        generate_html_report, generate_summary_card,
+        write_html_report, load_findings_jsonl, ReportConfig,
+    )
+    findings = load_findings_jsonl(args.findings)
+    if not findings:
+        print(ui.warn("no findings loaded from " + args.findings))
+        return 1
+
+    cfg = ReportConfig(
+        title=args.title,
+        author=args.author,
+        target=args.target,
+        classification=args.classification,
+    )
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+
+    if args.summary_only:
+        html_str = generate_summary_card(findings, cfg)
+        print(ui.info("report — ") + ui.bold("summary card") +
+              ui.gray(f"  {len(findings)} finding(s)"))
+    else:
+        html_str = generate_html_report(findings, cfg)
+        print(ui.info("report — ") + ui.bold("full report") +
+              ui.gray(f"  {len(findings)} finding(s)"))
+
+    write_html_report(html_str, args.html)
+    print(ui.ok(f"HTML report written to {args.html}"))
+    print(ui.gray("  Open in browser and print to PDF (Ctrl+P)"))
+    return 0
+
+
 def cmd_analyze(args) -> int:
     from pathlib import Path as _P
     from .report import analyze as az
@@ -1516,6 +1571,29 @@ def cmd_transforms(args) -> int:
     return 0
 
 
+def cmd_corpus(args) -> int:
+    from .kb.corpus import corpus_all, corpus_stats, corpus_total, corpus_for
+    if args.attack_class:
+        cls = kb_seeds.resolve_class(args.attack_class)
+        payloads = corpus_for(cls)
+        print(ui.bold(f"{cls}: {len(payloads)} payloads"))
+        if not args.count_only:
+            for p in payloads:
+                print(f"  {p}")
+    else:
+        stats = corpus_stats()
+        total = corpus_total()
+        print(ui.bold(ui.cyan(f"WAFFEN Payload Corpus — {total} payloads")))
+        print(ui.rule())
+        for cls, count in sorted(stats.items(), key=lambda x: -x[1]):
+            bar = ui.bar(count / max(stats.values()) * 100, width=20)
+            print(f"  {bar} {count:>5}  {cls}")
+        print(ui.rule())
+        print(ui.gray(f"  Total: {total} payloads across {len(stats)} classes"))
+        print(ui.gray("  Use: waffen bypass --corpus --class sqli --target URL"))
+    return 0
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -1551,6 +1629,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--payload", default="", help="single seed payload")
     b.add_argument("--class", dest="attack_class", default="", help="attack class (uses built-in KB seeds)")
     b.add_argument("--all-classes", action="store_true", help="run all built-in KB seeds")
+    b.add_argument("--corpus", action="store_true",
+                   help="use the full 3000+ payload corpus instead of minimal KB seeds")
     b.add_argument("--param", default="q", help="param/header/cookie name")
     b.add_argument("--method", default="GET")
     b.add_argument("--inject", default="query",
@@ -1611,6 +1691,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "(modsecurity/naxsi/cloudflare/aws/all)")
     b.add_argument("--defend-out", default="", metavar="PATH",
                    help="file or directory for --defend output (default: stdout)")
+    b.add_argument("--html-report", default="", metavar="FILE",
+                   help="write a professional HTML pentest report here (open in browser, print to PDF)")
     b.set_defaults(func=cmd_bypass)
 
     ad = sub.add_parser("adaptive",
@@ -1856,6 +1938,18 @@ def build_parser() -> argparse.ArgumentParser:
     df.add_argument("--out", default="", help="output file (or directory for --engine all)")
     df.set_defaults(func=cmd_defend)
 
+    rp = sub.add_parser("report",
+                        help="generate professional HTML pentest report from findings")
+    rp.add_argument("--findings", required=True, help="JSONL from `waffen bypass --out`")
+    rp.add_argument("--html", required=True, metavar="FILE", help="output HTML report path")
+    rp.add_argument("--title", default="WAF Bypass Assessment Report")
+    rp.add_argument("--author", default="WAFFEN Automated Assessment")
+    rp.add_argument("--target", default="")
+    rp.add_argument("--classification", default="CONFIDENTIAL")
+    rp.add_argument("--summary-only", action="store_true",
+                    help="generate a 1-page summary card instead of full report")
+    rp.set_defaults(func=cmd_report)
+
     an = sub.add_parser("analyze", help="analyze a collected dataset/log JSONL offline (no network)")
     an.add_argument("log", help="path to a .jsonl log written by `waffen dataset`")
     an.add_argument("--html", default="", help="write a styled HTML coverage report here")
@@ -1892,6 +1986,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     tr = sub.add_parser("transforms", help="list the request-level transforms")
     tr.set_defaults(func=cmd_transforms)
+
+    cp = sub.add_parser("corpus", help="show the built-in 3000+ payload corpus")
+    cp.add_argument("--class", dest="attack_class", default="", help="show payloads for this class")
+    cp.add_argument("--count", dest="count_only", action="store_true", help="show count only")
+    cp.set_defaults(func=cmd_corpus)
 
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)

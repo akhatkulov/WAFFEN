@@ -288,8 +288,18 @@ def classes() -> list[str]:
     return list(SEEDS.keys())
 
 
-def seeds_for(attack_class: str) -> list[str]:
-    return SEEDS.get(resolve_class(attack_class), [])
+def seeds_for(attack_class: str, include_corpus: bool = False) -> list[str]:
+    cls = resolve_class(attack_class)
+    seeds = list(SEEDS.get(cls, []))
+    if include_corpus:
+        from .corpus import corpus_for
+        extra = corpus_for(cls)
+        seen = set(seeds)
+        for p in extra:
+            if p not in seen:
+                seeds.append(p)
+                seen.add(p)
+    return seeds
 
 
 # Fold in any downloaded/updated KB seeds at import time (no-op when none present).
