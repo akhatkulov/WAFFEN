@@ -2681,6 +2681,66 @@ def cmd_dtree(args) -> int:
     return 0
 
 
+def cmd_synthesize_config(args) -> int:
+    from .report.synthesize_config import (
+        WAFConfigSynthesizer, write_config,
+        load_findings_jsonl, load_rulemap_json,
+    )
+
+    synth = WAFConfigSynthesizer()
+
+    if args.findings:
+        findings = load_findings_jsonl(args.findings)
+        synth.add_bypasses(findings)
+
+    if args.rulemap:
+        rulemap = load_rulemap_json(args.rulemap)
+        synth.add_rulemap(rulemap)
+
+    if args.benchmark:
+        import json as _json
+        with open(args.benchmark) as f:
+            synth.add_benchmark(_json.loads(f.read()))
+
+    if args.false_positives:
+        with open(args.false_positives) as f:
+            fps = [line.strip() for line in f if line.strip()]
+        synth.add_false_positives(fps)
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("WAF Config Synthesis"))
+    print(ui.gray(f"  engine={args.engine}  target_grade={args.target_grade}"))
+    print(ui.rule())
+
+    config = synth.synthesize(engine=args.engine, target_grade=args.target_grade)
+    warnings = synth.validate(config)
+
+    print(f"  {ui.info('Paranoia level:')} {config.paranoia_level}")
+    print(f"  {ui.info('Custom rules:')} {len(config.custom_rules)}")
+    print(f"  {ui.info('Rules to enable:')} {len(config.rules_enabled)}")
+    print(f"  {ui.info('Exclusions:')} {len(config.exclusions)}")
+    print(f"  {ui.info('Recommendations:')} {len(config.recommendations)}")
+
+    for rec in config.recommendations:
+        print(f"    {ui.green('+')} {rec}")
+    for w in warnings:
+        print(f"    {ui.yellow('!')} {w}")
+
+    if args.out:
+        files = write_config(synth, config, args.out)
+        print(ui.rule())
+        print(ui.ok(f"Configuration written to {args.out}/"))
+        for f in files:
+            print(f"    {f}")
+    else:
+        print(ui.rule())
+        print(synth.render(config))
+
+    return 0
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -3316,6 +3376,19 @@ def build_parser() -> argparse.ArgumentParser:
     dt.add_argument("--method", default="GET", help="HTTP method (default: GET)")
     dt.add_argument("--out", default="", help="write decision tree JSON here")
     dt.set_defaults(func=cmd_dtree)
+
+    sc = sub.add_parser("synthesize-config",
+                        help="generate optimal deployable WAF config from bypass findings + rulemap")
+    sc.add_argument("--findings", default="", help="JSONL from `waffen bypass --out`")
+    sc.add_argument("--rulemap", default="", help="JSON from `waffen rulemap --out`")
+    sc.add_argument("--benchmark", default="", help="JSON from `waffen benchmark --out`")
+    sc.add_argument("--false-positives", default="", help="file of known false-positive payloads (one per line)")
+    sc.add_argument("--engine", default="modsecurity", choices=["modsecurity", "nginx"],
+                    help="target WAF engine (default: modsecurity)")
+    sc.add_argument("--target-grade", default="A", choices=["A+", "A", "B+", "B", "C", "D", "F"],
+                    help="desired security grade (default: A)")
+    sc.add_argument("--out", default="", help="output directory for config files")
+    sc.set_defaults(func=cmd_synthesize_config)
 
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)
