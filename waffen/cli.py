@@ -784,6 +784,98 @@ def cmd_bypass(args) -> int:
     return 0
 
 
+def cmd_benchmark(args) -> int:
+    if args.list_profiles:
+        from .eval.profiles import list_profiles
+        print(ui.info("Pre-built WAF profiles:"))
+        for p in list_profiles():
+            print(f"  {ui.bold(p.key):18s} {p.name:25s} {ui.gray(p.note)}")
+        return 0
+
+    if args.compare:
+        from .eval.benchmark import load_benchmark_json, compare
+        a = load_benchmark_json(args.compare[0])
+        b = load_benchmark_json(args.compare[1])
+        bn = ui.banner(__version__)
+        if bn:
+            print(bn)
+        print(ui.info("WAF Benchmark Comparison"))
+        print(ui.gray(f"  A: {a.waf_name} ({a.target_url})"))
+        print(ui.gray(f"  B: {b.waf_name} ({b.target_url})"))
+        print(ui.rule())
+        print(compare(a, b))
+        return 0
+
+    if args.profile:
+        from .eval.profiles import get_profile
+        prof = get_profile(args.profile)
+        if not prof:
+            print(f"[err] unknown profile '{args.profile}' — use --list-profiles", file=sys.stderr)
+            return 2
+        args.target = args.target or prof.default_url
+        args.path = prof.path
+        args.param = prof.param
+        if prof.block_signature:
+            args.block_signature = prof.block_signature
+        args.waf_name = args.waf_name or prof.name
+
+    if not args.target:
+        print("[err] --target is required (or --profile)", file=sys.stderr)
+        return 2
+
+    from .eval.benchmark import WAFBenchmark, write_benchmark_json, write_html_report
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method, timeout=args.timeout,
+                    tls_verify=args.tls_verify, block_signature=args.block_signature,
+                    **_auth_kwargs(args))
+
+    classes = [c.strip() for c in args.classes.split(",") if c.strip()] or None
+    bmark = WAFBenchmark(target, corpus_classes=classes,
+                         transport=args.transport, waf_name=args.waf_name)
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("WAF Benchmark: ") + ui.bold(args.target))
+    if classes:
+        print(ui.gray(f"  classes: {', '.join(classes)}"))
+    print(ui.gray(f"  benign FP test: {'yes' if not args.no_benign else 'no'}"))
+    print(ui.rule())
+
+    def on_progress(cls_name, cs):
+        icon = ui.green("●") if cs.detection_rate >= 0.9 else (
+            ui.yellow("●") if cs.detection_rate >= 0.7 else ui.red("●"))
+        print(f"  {icon} {cls_name:22s} {cs.detection_rate:6.1%} "
+              f"({cs.passed} bypass / {cs.payloads_tested} tested)")
+
+    score = bmark.run(include_benign=not args.no_benign, on_progress=on_progress)
+
+    print(ui.rule())
+    gc = {"A+": "green", "A": "green", "A-": "green",
+          "B+": "yellow", "B": "yellow", "B-": "yellow"}.get(score.overall_grade, "red")
+    grade_fn = getattr(ui, gc, ui.bold)
+    print(f"  Grade: {grade_fn(ui.bold(score.overall_grade))}")
+    print(f"  Detection: {score.detection_rate:.1%}  |  "
+          f"FP: {score.false_positive_rate:.1%}  |  "
+          f"Bypasses: {score.bypass_count}  |  "
+          f"Avg: {score.avg_response_ms:.0f}ms  |  "
+          f"{score.duration_s:.1f}s")
+
+    if score.top_bypasses:
+        print(ui.info("\n  Top bypasses:"))
+        for i, (cls, payload) in enumerate(score.top_bypasses[:5], 1):
+            print(f"    {i}. {cls}: {ui.bold(payload[:55])}")
+
+    if args.out:
+        write_benchmark_json(score, args.out)
+        print(ui.ok(f"\n  Benchmark JSON: {args.out}"))
+    if args.html:
+        write_html_report(score, args.html)
+        print(ui.ok(f"  Benchmark HTML: {args.html}"))
+
+    return 0
+
+
 def cmd_eval(args) -> int:
     if not args.mock and not args.target:
         print("[err] --target is required (or --mock)", file=sys.stderr)
@@ -2876,6 +2968,27 @@ def build_parser() -> argparse.ArgumentParser:
     fz.add_argument("-mr", default="", help="match regex in response body")
     fz.add_argument("--out", default="", help="write results JSONL here")
     fz.set_defaults(func=cmd_fuzz)
+
+    bm = sub.add_parser("benchmark",
+                        help="standardized WAF benchmark — detection rate, FP rate, letter grade (SSL Labs for WAFs)")
+    _add_target_args(bm)
+    bm.add_argument("--param", default="q", help="parameter to inject (default: q)")
+    bm.add_argument("--inject", default="query", choices=["query", "body", "json"])
+    bm.add_argument("--method", default="GET")
+    bm.add_argument("--classes", default="",
+                    help="comma-separated attack classes (default: all standard classes)")
+    bm.add_argument("--no-benign", action="store_true",
+                    help="skip false-positive testing with benign payloads")
+    bm.add_argument("--waf-name", default="", help="WAF name for the report")
+    bm.add_argument("--profile", default="",
+                    help="pre-built profile: crs-pl1, crs-pl2, crs-pl3, crs-pl4, redeye")
+    bm.add_argument("--compare", nargs=2, metavar="FILE",
+                    help="compare two benchmark JSON files side-by-side")
+    bm.add_argument("--html", default="", help="write HTML benchmark report here")
+    bm.add_argument("--out", default="", help="write benchmark JSON here")
+    bm.add_argument("--list-profiles", action="store_true",
+                    help="list pre-built WAF profiles and exit")
+    bm.set_defaults(func=cmd_benchmark)
 
     sm = sub.add_parser("smuggle", help="experimental: timing-based HTTP request-smuggling (desync) probes")
     _add_target_args(sm)
