@@ -44,6 +44,18 @@ def _auth_kwargs(args):
 def _gather_seeds(args):
     seeds = []
     use_corpus = getattr(args, "corpus", False)
+    grammar_type = getattr(args, "grammar", "")
+
+    if grammar_type:
+        from .grammar import GRAMMARS
+        grammar = GRAMMARS.get(grammar_type)
+        if grammar:
+            cls_name = {"sqli": "SQL Injection", "sql": "SQL Injection",
+                        "xss": "XSS Injection", "ssti": "SSTI"}.get(grammar_type, grammar_type)
+            for p in grammar.generate_n(50, max_depth=10, seed=42):
+                seeds.append((cls_name, p))
+            return seeds
+
     if args.payload:
         seeds.append((args.attack_class or "", args.payload))
     elif args.attack_class:
@@ -1355,6 +1367,59 @@ def cmd_ws(args) -> int:
     return 0
 
 
+def cmd_rulemap(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    from .recon.rulemap import RuleMapper, write_rulemap_json
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method, timeout=args.timeout,
+                    tls_verify=args.tls_verify, block_signature=args.block_signature,
+                    **_auth_kwargs(args))
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("WAF rule map for ") + ui.bold(args.target))
+    print(ui.gray("  reverse-engineering WAF rule set via black-box probing"))
+    print(ui.rule())
+
+    mapper = RuleMapper(target, sender=None)
+    report = mapper.map_rules()
+
+    print(f"  {ui.info('WAF type:        ')} {ui.bold(report.waf_type)}")
+    if report.estimated_paranoia_level:
+        print(f"  {ui.info('Paranoia level:  ')} {ui.bold(f'PL{report.estimated_paranoia_level}')}")
+    print(f"  {ui.info('Rules active:    ')} {len(report.rules_active)}/{report.total_probes}")
+    print(f"  {ui.info('Gaps (inactive): ')} {ui.bold(str(len(report.gaps)))}")
+
+    print(f"\n  {ui.info('Category breakdown:')}")
+    for cat in sorted(report.categories):
+        info = report.categories[cat]
+        pct = info["active"] / info["total"] * 100 if info["total"] else 0
+        pl_parts = []
+        for pl in sorted(info.get("by_pl", {})):
+            pldata = info["by_pl"][pl]
+            pl_pct = pldata["active"] / pldata["total"] * 100 if pldata["total"] else 0
+            pl_parts.append(f"PL{pl}:{pl_pct:.0f}%")
+        pl_str = " — " + " ".join(pl_parts) if pl_parts else ""
+        bar_color = ui.green if pct > 80 else (ui.yellow if pct > 50 else ui.red)
+        print(f"    {cat:12s} {info['active']:3d}/{info['total']:3d} "
+              f"({bar_color(f'{pct:.0f}%')}){pl_str}")
+
+    if report.gaps:
+        print(f"\n  {ui.red(f'GAPS ({len(report.gaps)} inactive rules):')}")
+        for g in report.gaps[:20]:
+            print(f"    {ui.red('!')} {g.rule_id} (PL{g.paranoia_level}) "
+                  f"{g.description} {ui.gray('→')} {ui.bold(g.trigger_payload[:50])}")
+
+    print(ui.rule())
+
+    if args.out:
+        write_rulemap_json(report, args.out)
+        print(ui.ok(f"rule map written to {args.out}"))
+    return 0
+
+
 def cmd_sidechannel(args) -> int:
     if not args.target:
         print("[err] --target is required", file=sys.stderr)
@@ -2184,6 +2249,145 @@ def cmd_exploit(args) -> int:
     return 0 if result.data else 1
 
 
+def cmd_grammar(args) -> int:
+    from .grammar import GRAMMARS
+    gtype = args.type
+    grammar = GRAMMARS.get(gtype)
+    if not grammar:
+        print(f"[err] unknown grammar type: {gtype}", file=sys.stderr)
+        return 2
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("grammar generator ") + ui.bold(gtype)
+          + ui.gray(f"   depth={args.max_depth}"))
+    print(ui.rule())
+
+    if args.target_symbols:
+        required = {s.strip() for s in args.target_symbols.split(",") if s.strip()}
+        payloads = grammar.generate_targeted(
+            required, max_depth=args.max_depth,
+            attempts=args.generate * 5, seed=args.seed)
+        payloads = payloads[:args.generate]
+        print(ui.info(f"targeted generation (require: {required})"))
+    elif args.coverage:
+        payloads = grammar.coverage_generate(
+            n=args.generate, max_depth=args.max_depth, seed=args.seed)
+        covered = len(payloads)
+        total_rules = sum(len(alts) for alts in grammar.rules.values())
+        print(ui.info(f"coverage mode: {covered} payloads, {total_rules} rule alternatives"))
+    else:
+        payloads = grammar.generate_n(
+            args.generate, max_depth=args.max_depth, seed=args.seed)
+        print(ui.info(f"random generation: {len(payloads)} payloads"))
+
+    for i, p in enumerate(payloads):
+        print(f"  {ui.gray(f'{i+1:3d}')}  {p}")
+
+    print(ui.rule())
+    print(ui.gray(f"  {len(payloads)} payloads generated"))
+
+    if args.out:
+        from pathlib import Path
+        Path(args.out).write_text("\n".join(payloads) + "\n")
+        print(ui.ok(f"written to {args.out}"))
+
+    return 0
+
+
+def cmd_synthesize(args) -> int:
+    from .ai.synthesize import PayloadSynthesizer, SynthesisConfig, SynthesisContext
+
+    config = SynthesisConfig(
+        provider=args.provider,
+        model=args.model,
+        api_key=args.api_key,
+        max_payloads=args.count,
+        temperature=args.temperature,
+    )
+
+    # Build context from one of three sources
+    ctx = None
+    if args.profile:
+        try:
+            from .core.profile import TargetProfile
+            profile = TargetProfile.load(args.profile)
+            ctx = SynthesisContext.from_profile(profile)
+            print(ui.info("context loaded from profile: ") + ui.bold(args.profile))
+        except Exception as exc:
+            print(f"[err] could not load profile: {exc}", file=sys.stderr)
+            return 2
+    elif args.detected or args.invisible or args.gaps:
+        ctx = SynthesisContext.from_manual(
+            detected=args.detected, invisible=args.invisible,
+            gaps=args.gaps, db=args.db, waf=args.waf_name,
+        )
+    elif args.target:
+        # Run score-probe live to build context
+        try:
+            from .recon.score_probe import ScoreProber
+            from .core.oracle import Oracle
+            target = Target(base_url=args.target, path=args.path, param=args.param,
+                            inject="query", method="GET", timeout=args.timeout,
+                            tls_verify=args.tls_verify,
+                            block_signature=args.block_signature,
+                            **_auth_kwargs(args))
+            oracle = Oracle(target, transport=args.transport)
+            print(ui.info("running score-probe to build WAF context..."))
+            prober = ScoreProber(oracle)
+            result = prober.run(args.attack_class)
+            ctx = SynthesisContext.from_score_probe(result)
+            print(ui.gray(f"  detected={len(ctx.detected_keywords)}  "
+                          f"invisible={len(ctx.invisible_keywords)}  "
+                          f"boundary={len(ctx.boundary_payloads)}"))
+        except Exception as exc:
+            print(f"[err] score-probe failed: {exc}", file=sys.stderr)
+            return 1
+    else:
+        print("[err] provide --target, --profile, or --detected/--invisible/--gaps", file=sys.stderr)
+        return 2
+
+    if ctx is None or ctx.is_empty():
+        print(ui.warn("empty context — synthesis may produce generic payloads"))
+        ctx = ctx or SynthesisContext()
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("LLM payload synthesis ") + ui.bold(f"({config.provider}/{config.model})"))
+    print(ui.gray(f"  class={args.attack_class}  count={config.max_payloads}  "
+                  f"temp={config.temperature}"))
+    print(ui.rule())
+
+    synth = PayloadSynthesizer(config)
+    try:
+        payloads = synth.synthesize(ctx, args.attack_class)
+    except ValueError as exc:
+        print(ui.red(f"  {exc}"))
+        print(ui.gray("\n  Offline alternative: waffen grammar --type sqli --generate 50"))
+        print(ui.gray("  Or: waffen bypass --corpus --class sqli"))
+        return 1
+    except Exception as exc:
+        print(ui.red(f"  API error: {exc}"))
+        return 1
+
+    print(ui.green(f"  {len(payloads)} payloads synthesized\n"))
+    for i, p in enumerate(payloads[:30]):
+        print(f"  {ui.gray(f'{i+1:3d}')}  {p}")
+    if len(payloads) > 30:
+        print(ui.gray(f"  ... and {len(payloads) - 30} more"))
+
+    print(ui.rule())
+    print(ui.gray("  Privacy: only keyword map + gap tokens were sent to API (no URLs/creds/bodies)"))
+
+    if args.out:
+        from pathlib import Path
+        Path(args.out).write_text("\n".join(payloads) + "\n")
+        print(ui.ok(f"payloads written to {args.out}"))
+    return 0
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -2285,6 +2489,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="write a professional HTML pentest report here (open in browser, print to PDF)")
     b.add_argument("--dry-run", action="store_true",
                    help="show the search plan and time estimate, then exit without sending any requests")
+    b.add_argument("--grammar", default="", metavar="TYPE",
+                   help="use grammar-guided seed generation (sqli/xss/ssti) instead of KB seeds")
     b.set_defaults(func=cmd_bypass)
 
     ad = sub.add_parser("adaptive",
@@ -2558,6 +2764,16 @@ def build_parser() -> argparse.ArgumentParser:
     cal.add_argument("--out", default="", help="write calibration/cluster report JSON here")
     cal.set_defaults(func=cmd_calibrate)
 
+    rm = sub.add_parser("rulemap",
+                        help="reverse-engineer WAF rule set via black-box probing (CRS rule mapping)")
+    _add_target_args(rm)
+    rm.add_argument("--param", default="q", help="parameter to inject (default: q)")
+    rm.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                    help="where to place the probe (default: query)")
+    rm.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    rm.add_argument("--out", default="", help="write rule map report JSON here")
+    rm.set_defaults(func=cmd_rulemap)
+
     fp = sub.add_parser("fingerprint", help="identify the WAF in front of a target")
     _add_target_args(fp)
     fp.set_defaults(func=cmd_fingerprint)
@@ -2692,6 +2908,46 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--limit", type=int, default=10, help="max rows to extract (default: 10)")
     ex.add_argument("--out", default="", help="write extraction results JSON here")
     ex.set_defaults(func=cmd_exploit)
+
+    gr = sub.add_parser("grammar",
+                        help="generate syntactically valid payloads from context-free grammars")
+    gr.add_argument("--type", default="sqli", choices=["sqli", "sql", "xss", "ssti"],
+                    help="grammar type (default: sqli)")
+    gr.add_argument("--generate", "-n", type=int, default=20,
+                    help="number of payloads to generate (default: 20)")
+    gr.add_argument("--coverage", action="store_true",
+                    help="generate payloads covering all grammar rules")
+    gr.add_argument("--target-symbols", default="",
+                    help="comma-separated symbols that must appear in payloads")
+    gr.add_argument("--max-depth", type=int, default=10,
+                    help="max grammar expansion depth (default: 10)")
+    gr.add_argument("--seed", type=int, default=None,
+                    help="random seed for reproducibility")
+    gr.add_argument("--out", default="", help="write payloads to file (one per line)")
+    gr.set_defaults(func=cmd_grammar)
+
+    sy = sub.add_parser("synthesize",
+                        help="LLM-guided payload synthesis — generate context-aware bypass payloads "
+                             "using Claude/GPT (requires API key)")
+    _add_target_args(sy)
+    sy.add_argument("--param", default="q", help="parameter name (default: q)")
+    sy.add_argument("--class", dest="attack_class", default="sqli",
+                    help="attack class: sqli, xss, ssti, ssrf, xxe, cmdi (default: sqli)")
+    sy.add_argument("--profile", default="", help="load WAF context from a saved target profile")
+    sy.add_argument("--provider", default="anthropic", choices=["anthropic", "openai"],
+                    help="LLM provider (default: anthropic)")
+    sy.add_argument("--model", default="claude-sonnet-4-20250514",
+                    help="model name (default: claude-sonnet-4-20250514)")
+    sy.add_argument("--api-key", default="", help="API key (or set ANTHROPIC_API_KEY / OPENAI_API_KEY env var)")
+    sy.add_argument("--count", type=int, default=50, help="number of payloads to generate (default: 50)")
+    sy.add_argument("--temperature", type=float, default=0.8, help="generation temperature (default: 0.8)")
+    sy.add_argument("--detected", default="", help="comma-separated detected keywords (manual context)")
+    sy.add_argument("--invisible", default="", help="comma-separated invisible keywords (manual context)")
+    sy.add_argument("--gaps", default="", help="comma-separated gap tokens (manual context)")
+    sy.add_argument("--db", default="", help="backend DB engine: sqlite, mysql, postgresql, mssql")
+    sy.add_argument("--waf-name", default="", help="WAF name for context")
+    sy.add_argument("--out", default="", help="write payloads to file (one per line)")
+    sy.set_defaults(func=cmd_synthesize)
 
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)

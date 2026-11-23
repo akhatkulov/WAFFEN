@@ -1,2 +1,2 @@
 """WAFFEN — a WAF evaluation / bypass-research toolkit for authorized targets."""
-__version__ = "1.2.0"
+__version__ = "1.3.0"
