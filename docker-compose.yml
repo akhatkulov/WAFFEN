@@ -1,0 +1,7 @@
+services:
+  waffen:
+    build: .
+    network_mode: host
+    volumes:
+      - ./results:/results
+    entrypoint: ["waffen"]

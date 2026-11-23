@@ -166,6 +166,35 @@ All target-facing subcommands share:
 
 ---
 
+## Docker
+
+```bash
+# One-liner scan:
+docker run --rm akhatkulov/waffen bypass --target https://example.com --class sqli --calibrate
+
+# Interactive auto mode:
+docker run --rm -it akhatkulov/waffen auto --url https://example.com -y
+
+# Save results to host:
+docker run --rm -v $(pwd)/results:/results akhatkulov/waffen bypass \
+  --target https://example.com --class sqli --out /results/findings.jsonl
+
+# Build locally:
+docker build -t waffen .
+```
+
+## Performance
+
+| Mode | Throughput | Use case |
+|------|-----------|----------|
+| `waffen fuzz` (thread pool) | 500–1000 req/s | Bulk wordlist testing |
+| `waffen bypass --concurrency 10` | 200–500 req/s | Parallel search |
+| `waffen bypass` (sequential) | 50–200 req/s | Precise search with canary |
+
+Response caching avoids re-sending identical payloads during deep mutation
+chains. The pooled transport (default) reuses keep-alive connections.
+`--dry-run` shows the request estimate before spending budget.
+
 ## Lab Setup
 
 The included lab (`lab/docker-compose.yml`) runs OWASP CRS + ModSecurity in

@@ -126,11 +126,14 @@ class Oracle:
     def __init__(self, target: Target, sender=None, request_transform=None, calibration=None,
                  delay: float = 0.0, backoff: bool = True,
                  canary_payload: str | None = None, canary_every: int = 25,
-                 transport: str = "auto"):
+                 transport: str = "auto", cache_size: int = 256):
         import threading as _threading
         self.t = target
         self.request_transform = request_transform
         self._tls = _threading.local()  # per-thread keep-alive connection (pooled transport)
+        self._cache: dict[str, Response] = {}
+        self._cache_size = cache_size if canary_payload is None else 0
+        self._cache_hits = 0
         # "auto": use pooled (keep-alive) when no structural transform is active,
         # curl when a transform needs curl's features (custom argv).
         if transport == "auto":
@@ -470,12 +473,29 @@ class Oracle:
         return THROUGH
 
     # -- public API -----------------------------------------------------------
+    def _cache_key(self, payload: str) -> str:
+        rt_name = getattr(self.request_transform, "name", "") if self.request_transform else ""
+        return f"{rt_name}::{payload}"
+
     def send(self, payload: str) -> Response:
         import time as _time
         if self.delay:
             _time.sleep(self.delay)
-        self.requests += 1
-        resp = self._apply_calibration(self._sender(payload))
+        ck = self._cache_key(payload)
+        cached = self._cache_size > 0 and ck in self._cache
+        if cached:
+            self._cache_hits += 1
+            resp = self._cache[ck]
+        else:
+            self.requests += 1
+            resp = self._apply_calibration(self._sender(payload))
+            if self._cache_size > 0 and resp.verdict != DOWN:
+                if len(self._cache) >= self._cache_size:
+                    try:
+                        self._cache.pop(next(iter(self._cache)))
+                    except StopIteration:
+                        pass
+                self._cache[ck] = resp
 
         # Canary ban check (see __init__ docstring note): a clean fast 403 ban looks
         # just like a normal BLOCKED verdict, so it must be checked against a payload
